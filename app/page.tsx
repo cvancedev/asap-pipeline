@@ -48,17 +48,21 @@ const moveTypes = [
 ];
 
 const assignedUsers = ["Curt", "Jacob"];
+
 export default function Home() {
- const [leads, setLeads] = useState<Lead[]>([]);
-const hasLoaded = useRef(false);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const hasLoaded = useRef(false);
 
-  useEffect(() => {
-    hasLoaded.current = true;
+ useEffect(() => {
+  hasLoaded.current = true;
 
-    const saved = localStorage.getItem("asap-pipeline");
-    if (!saved) return;
+  const saved = localStorage.getItem("asap-pipeline");
+  if (!saved) return;
 
+  try {
     const parsed = JSON.parse(saved);
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
 
     setLeads(
       parsed.map((lead: Partial<Lead>) => ({
@@ -76,7 +80,11 @@ const hasLoaded = useRef(false);
         notes: lead.notes || "",
       })),
     );
-  }, []);
+  } catch {
+    console.error("Invalid saved pipeline data");
+  }
+}, []);
+
   const [form, setForm] = useState({
     project: "",
     customer: "",
@@ -91,10 +99,10 @@ const hasLoaded = useRef(false);
     notes: "",
   });
 
- useEffect(() => {
-  if (!hasLoaded.current) return;
-  localStorage.setItem("asap-pipeline", JSON.stringify(leads));
-}, [leads]);
+  useEffect(() => {
+    if (!hasLoaded.current) return;
+    localStorage.setItem("asap-pipeline", JSON.stringify(leads));
+  }, [leads]);
 
   const counts = useMemo(() => {
     return statuses.reduce(
