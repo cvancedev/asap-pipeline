@@ -1,6 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  setDoc,
+  where,
+  writeBatch,
+} from "firebase/firestore";
+import { db } from "../lib/firebase";
 
 type Lead = {
   id: string;
@@ -49,41 +61,157 @@ const moveTypes = [
 
 const assignedUsers = ["Curt", "Jacob"];
 
-export default function Home() {
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const hasLoaded = useRef(false);
+const LEADS_STORAGE_KEY = "asap-pipeline";
+const LEADS_STORE_EVENT = "asap-pipeline-updated";
+const EMPTY_LEADS: Lead[] = [];
+const leadsCollection = collection(db, "leads");
 
- useEffect(() => {
-  hasLoaded.current = true;
+let cachedLeadsRaw: string | null = null;
+let cachedLeadsSnapshot: Lead[] = EMPTY_LEADS;
 
-  const saved = localStorage.getItem("asap-pipeline");
-  if (!saved) return;
+function normalizeLead(lead: Partial<Lead>): Lead {
+  return {
+    id: lead.id || crypto.randomUUID(),
+    project: lead.project || "",
+    customer: lead.customer || "",
+    phone: lead.phone || "",
+    moveDate: lead.moveDate || "",
+    moveType: lead.moveType || "",
+    status: lead.status || "Hot Lead",
+    priority: lead.priority || "High",
+    assignedTo: lead.assignedTo || "Curt",
+    lastContact: lead.lastContact || "",
+    nextAction: lead.nextAction || "Follow up with customer",
+    notes: lead.notes || "",
+  };
+}
+
+function readStoredLeads(): Lead[] {
+  if (typeof window === "undefined") return EMPTY_LEADS;
 
   try {
+    const saved = localStorage.getItem(LEADS_STORAGE_KEY);
+    if (!saved) {
+      cachedLeadsRaw = null;
+      cachedLeadsSnapshot = EMPTY_LEADS;
+      return cachedLeadsSnapshot;
+    }
+
+    if (saved === cachedLeadsRaw) {
+      return cachedLeadsSnapshot;
+    }
+
     const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) {
+      cachedLeadsRaw = saved;
+      cachedLeadsSnapshot = EMPTY_LEADS;
+      return cachedLeadsSnapshot;
+    }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-
-    setLeads(
-      parsed.map((lead: Partial<Lead>) => ({
-        id: lead.id || crypto.randomUUID(),
-        project: lead.project || "",
-        customer: lead.customer || "",
-        phone: lead.phone || "",
-        moveDate: lead.moveDate || "",
-        moveType: lead.moveType || "",
-        status: lead.status || "Hot Lead",
-        priority: lead.priority || "High",
-        assignedTo: lead.assignedTo || "Curt",
-        lastContact: lead.lastContact || "",
-        nextAction: lead.nextAction || "Follow up with customer",
-        notes: lead.notes || "",
-      })),
-    );
-  } catch {
-    console.error("Invalid saved pipeline data");
+    cachedLeadsRaw = saved;
+    cachedLeadsSnapshot = parsed.map((lead: Partial<Lead>) => normalizeLead(lead));
+    return cachedLeadsSnapshot;
+  } catch (err) {
+    console.error("Invalid saved pipeline data", err);
+    cachedLeadsRaw = null;
+    cachedLeadsSnapshot = EMPTY_LEADS;
+    return cachedLeadsSnapshot;
   }
-}, []);
+}
+
+function getServerLeadsSnapshot(): Lead[] {
+  return EMPTY_LEADS;
+}
+
+function writeStoredLeads(leads: Lead[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(LEADS_STORAGE_KEY, JSON.stringify(leads));
+  window.dispatchEvent(new Event(LEADS_STORE_EVENT));
+}
+
+function subscribeToLeads(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const handleChange = () => onStoreChange();
+  window.addEventListener("storage", handleChange);
+  window.addEventListener(LEADS_STORE_EVENT, handleChange);
+
+  return () => {
+    window.removeEventListener("storage", handleChange);
+    window.removeEventListener(LEADS_STORE_EVENT, handleChange);
+  };
+}
+
+async function upsertLeadInFirestore(lead: Lead) {
+  await setDoc(doc(leadsCollection, lead.id), lead, { merge: true });
+}
+
+async function deleteLeadInFirestore(leadId: string) {
+  await deleteDoc(doc(leadsCollection, leadId));
+
+  // Cleanup legacy docs created before stable document IDs were used.
+  const legacySnapshot = await getDocs(
+    query(leadsCollection, where("id", "==", leadId)),
+  );
+
+  if (!legacySnapshot.empty) {
+    const batch = writeBatch(db);
+    legacySnapshot.docs.forEach((docSnapshot) => {
+      batch.delete(docSnapshot.ref);
+    });
+    await batch.commit();
+  }
+}
+
+async function replaceFirestoreLeads(leads: Lead[]) {
+  const snapshot = await getDocs(leadsCollection);
+  const leadIds = new Set(leads.map((lead) => lead.id));
+  const batch = writeBatch(db);
+
+  snapshot.docs.forEach((docSnapshot) => {
+    const data = docSnapshot.data() as Partial<Lead>;
+    const logicalId = data.id || docSnapshot.id;
+    if (!leadIds.has(logicalId)) {
+      batch.delete(docSnapshot.ref);
+    }
+  });
+
+  leads.forEach((lead) => {
+    batch.set(doc(leadsCollection, lead.id), lead);
+  });
+
+  await batch.commit();
+}
+
+export default function Home() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const leads = useSyncExternalStore(
+    subscribeToLeads,
+    readStoredLeads,
+    getServerLeadsSnapshot,
+  );
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      leadsCollection,
+      (snapshot) => {
+        const firestoreLeads = snapshot.docs.map((docSnapshot) => {
+          const data = docSnapshot.data() as Partial<Lead>;
+          return normalizeLead({ id: data.id || docSnapshot.id, ...data });
+        });
+
+        // Keep Firestore as source of truth while preserving local backups.
+        writeStoredLeads(firestoreLeads);
+      },
+      (err) => {
+        console.error("Failed to subscribe to Firestore leads", err);
+      },
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const [form, setForm] = useState({
     project: "",
@@ -99,11 +227,6 @@ export default function Home() {
     notes: "",
   });
 
-  useEffect(() => {
-    if (!hasLoaded.current) return;
-    localStorage.setItem("asap-pipeline", JSON.stringify(leads));
-  }, [leads]);
-
   const counts = useMemo(() => {
     return statuses.reduce(
       (acc, status) => {
@@ -114,7 +237,22 @@ export default function Home() {
     );
   }, [leads]);
 
-  function addLead(e: React.FormEvent) {
+  async function updateLead(id: string, updates: Partial<Lead>) {
+    const existing = leads.find((lead) => lead.id === id);
+    if (!existing) return;
+
+    const updatedLead = normalizeLead({ ...existing, ...updates });
+    writeStoredLeads(leads.map((lead) => (lead.id === id ? updatedLead : lead)));
+
+    try {
+      await upsertLeadInFirestore(updatedLead);
+    } catch (err) {
+      console.error("Failed to update lead in Firestore", err);
+      alert("Lead updated locally, but Firestore sync failed.");
+    }
+  }
+
+  async function addLead(e: React.FormEvent) {
     e.preventDefault();
     if (!form.project || !form.customer) return;
 
@@ -123,7 +261,15 @@ export default function Home() {
       ...form,
     };
 
-    setLeads([newLead, ...leads]);
+    writeStoredLeads([newLead, ...leads]);
+
+    try {
+      await upsertLeadInFirestore(newLead);
+    } catch (err) {
+      console.error("Failed to save new lead to Firestore", err);
+      alert("Lead saved locally, but Firestore sync failed.");
+    }
+
     setForm({
       project: "",
       customer: "",
@@ -140,13 +286,31 @@ export default function Home() {
   }
 
   function updateStatus(id: string, status: string) {
-    setLeads(
-      leads.map((lead) => (lead.id === id ? { ...lead, status } : lead)),
-    );
+    void updateLead(id, { status });
   }
 
-  function deleteLead(id: string) {
-    setLeads(leads.filter((lead) => lead.id !== id));
+  async function deleteLead(id: string) {
+    writeStoredLeads(leads.filter((lead) => lead.id !== id));
+
+    try {
+      await deleteLeadInFirestore(id);
+    } catch (err) {
+      console.error("Failed to delete lead from Firestore", err);
+      alert("Lead deleted locally, but Firestore sync failed.");
+    }
+  }
+
+  function editLead(id: string) {
+    const existing = leads.find((lead) => lead.id === id);
+    if (!existing) return;
+
+    const customer = prompt("Edit customer name", existing.customer);
+    if (customer === null) return;
+
+    const notes = prompt("Edit notes", existing.notes);
+    if (notes === null) return;
+
+    void updateLead(id, { customer: customer.trim(), notes });
   }
 
   function copySummary() {
@@ -169,6 +333,114 @@ export default function Home() {
     alert("Summary copied for Jacob.");
   }
 
+  function exportBackup() {
+    try {
+      const saved = localStorage.getItem(LEADS_STORAGE_KEY);
+      const leadsData = saved ? JSON.parse(saved) : leads;
+
+      // capture all localStorage entries (parsed when possible)
+      const allLocalStorage: Record<string, unknown> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i) as string;
+        const value = localStorage.getItem(key);
+        try {
+          allLocalStorage[key] = value ? JSON.parse(value) : null;
+        } catch {
+          allLocalStorage[key] = value;
+        }
+      }
+
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        exportedFrom: typeof window !== "undefined" ? window.location.href : null,
+        exportedBy: typeof navigator !== "undefined" ? navigator.userAgent : null,
+        leadCount: Array.isArray(leadsData) ? leadsData.length : 0,
+        leads: leadsData,
+        statuses,
+        localStorage: allLocalStorage,
+      };
+
+      const content = JSON.stringify(payload, null, 2);
+      const date = new Date().toISOString().slice(0, 10);
+      const filename = `asap-pipeline-backup-${date}.json`;
+
+      const blob = new Blob([content], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Export failed", err);
+      alert("Export failed. Check console for details.");
+    }
+  }
+
+  function handleImportClick() {
+    const existing = localStorage.getItem(LEADS_STORAGE_KEY);
+    if (existing) {
+      const proceed = confirm(
+        "Importing a backup will overwrite your current leads. Continue?",
+      );
+      if (!proceed) return;
+    }
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const parsed = JSON.parse(text);
+
+        let leadsArray: Partial<Lead>[] | null = null;
+
+        if (Array.isArray(parsed)) leadsArray = parsed;
+        else if (Array.isArray(parsed.leads)) leadsArray = parsed.leads;
+        else if (
+          parsed &&
+          parsed.localStorage &&
+          parsed.localStorage["asap-pipeline"] &&
+          Array.isArray(parsed.localStorage["asap-pipeline"])
+        ) {
+          leadsArray = parsed.localStorage["asap-pipeline"];
+        }
+
+        if (!Array.isArray(leadsArray)) {
+          throw new Error("Backup JSON does not contain a leads array.");
+        }
+
+        const normalized = leadsArray.map((lead: Partial<Lead>) =>
+          normalizeLead(lead),
+        );
+
+        writeStoredLeads(normalized);
+
+        try {
+          await replaceFirestoreLeads(normalized);
+          alert(`Import successful — ${normalized.length} leads restored.`);
+        } catch (err) {
+          console.error("Import sync to Firestore failed", err);
+          alert("Import restored local backup, but Firestore sync failed.");
+        }
+      } catch (err) {
+        console.error("Import failed", err);
+        alert("Import failed: " + (err as Error).message);
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    };
+
+    reader.readAsText(file);
+  }
+
   return (
     <main style={page}>
       <header style={header}>
@@ -182,6 +454,19 @@ export default function Home() {
         <button onClick={copySummary} style={primaryButton}>
           Copy Summary
         </button>
+        <button onClick={exportBackup} style={exportButton}>
+          Export Backup
+        </button>
+        <button onClick={handleImportClick} style={{ ...exportButton, marginLeft: 8 }}>
+          Import Backup
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json"
+          style={{ display: "none" }}
+          onChange={handleFileChange}
+        />
       </header>
 
       <section style={statsGrid}>
@@ -365,6 +650,13 @@ export default function Home() {
                   >
                     Delete
                   </button>
+
+                  <button
+                    onClick={() => editLead(lead.id)}
+                    style={deleteButton}
+                  >
+                    Edit
+                  </button>
                 </div>
               ))}
           </div>
@@ -442,6 +734,16 @@ const deleteButton = {
   borderRadius: 8,
   background: "#fff",
   cursor: "pointer",
+};
+
+const exportButton = {
+  padding: "10px 14px",
+  border: "1px solid #111827",
+  borderRadius: 8,
+  background: "#fff",
+  color: "#111827",
+  cursor: "pointer",
+  marginLeft: 8,
 };
 
 const fieldLabel = {
