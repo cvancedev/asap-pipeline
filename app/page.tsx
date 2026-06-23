@@ -5,8 +5,10 @@ import {
   collection,
   deleteDoc,
   doc,
+  limit,
   getDocs,
   onSnapshot,
+  orderBy,
   query,
   setDoc,
   where,
@@ -35,6 +37,17 @@ type Lead = {
   lastContact: string;
   nextAction: string;
   notes: string;
+};
+
+type ActivityRecord = {
+  id: string;
+  leadId: string;
+  project: string;
+  customer: string;
+  action: string;
+  details: string;
+  userEmail: string;
+  createdAt: string;
 };
 
 const statuses = [
@@ -73,6 +86,7 @@ const LEADS_STORAGE_KEY = "asap-pipeline";
 const LEADS_STORE_EVENT = "asap-pipeline-updated";
 const EMPTY_LEADS: Lead[] = [];
 const leadsCollection = collection(db, "leads");
+const activityCollection = collection(db, "activity");
 
 let cachedLeadsRaw: string | null = null;
 let cachedLeadsSnapshot: Lead[] = EMPTY_LEADS;
@@ -193,6 +207,21 @@ async function replaceFirestoreLeads(leads: Lead[]) {
   await batch.commit();
 }
 
+async function addActivityRecord(
+  userEmail: string,
+  input: Omit<ActivityRecord, "id" | "createdAt" | "userEmail">,
+) {
+  const id = crypto.randomUUID();
+  const activity: ActivityRecord = {
+    id,
+    userEmail,
+    createdAt: new Date().toISOString(),
+    ...input,
+  };
+
+  await setDoc(doc(activityCollection, id), activity);
+}
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const leads = useSyncExternalStore(
@@ -205,6 +234,7 @@ export default function Home() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [recentActivity, setRecentActivity] = useState<ActivityRecord[]>([]);
 
   useEffect(() => {
     void setPersistence(auth, browserLocalPersistence).catch((err) => {
@@ -235,6 +265,41 @@ export default function Home() {
       },
       (err) => {
         console.error("Failed to subscribe to Firestore leads", err);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const recentActivityQuery = query(
+      activityCollection,
+      orderBy("createdAt", "desc"),
+      limit(10),
+    );
+
+    const unsubscribe = onSnapshot(
+      recentActivityQuery,
+      (snapshot) => {
+        const items = snapshot.docs.map((docSnapshot) => {
+          const data = docSnapshot.data() as Partial<ActivityRecord>;
+          return {
+            id: data.id || docSnapshot.id,
+            leadId: data.leadId || "",
+            project: data.project || "",
+            customer: data.customer || "",
+            action: data.action || "",
+            details: data.details || "",
+            userEmail: data.userEmail || "",
+            createdAt: data.createdAt || "",
+          } satisfies ActivityRecord;
+        });
+        setRecentActivity(items);
+      },
+      (err) => {
+        console.error("Failed to subscribe to activity", err);
       },
     );
 
@@ -275,6 +340,37 @@ export default function Home() {
     try {
       if (!user) return;
       await upsertLeadInFirestore(updatedLead);
+
+      const statusChanged = updates.status && updates.status !== existing.status;
+      const detailParts: string[] = [];
+
+      if (statusChanged) {
+        detailParts.push(
+          `status: ${existing.status} -> ${updatedLead.status}`,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "customer") &&
+        updates.customer !== existing.customer
+      ) {
+        detailParts.push(
+          `customer: ${existing.customer} -> ${updatedLead.customer}`,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "notes") &&
+        updates.notes !== existing.notes
+      ) {
+        detailParts.push("notes updated");
+      }
+
+      await addActivityRecord(user.email || "unknown", {
+        leadId: updatedLead.id,
+        project: updatedLead.project,
+        customer: updatedLead.customer,
+        action: statusChanged ? "status_changed" : "lead_edited",
+        details: detailParts.join("; ") || "Lead updated",
+      });
     } catch (err) {
       console.error("Failed to update lead in Firestore", err);
       alert("Lead updated locally, but Firestore sync failed.");
@@ -295,6 +391,13 @@ export default function Home() {
     try {
       if (!user) return;
       await upsertLeadInFirestore(newLead);
+      await addActivityRecord(user.email || "unknown", {
+        leadId: newLead.id,
+        project: newLead.project,
+        customer: newLead.customer,
+        action: "lead_created",
+        details: "Lead created",
+      });
     } catch (err) {
       console.error("Failed to save new lead to Firestore", err);
       alert("Lead saved locally, but Firestore sync failed.");
@@ -320,11 +423,21 @@ export default function Home() {
   }
 
   async function deleteLead(id: string) {
+    const existing = leads.find((lead) => lead.id === id);
     writeStoredLeads(leads.filter((lead) => lead.id !== id));
 
     try {
       if (!user) return;
       await deleteLeadInFirestore(id);
+      if (existing) {
+        await addActivityRecord(user.email || "unknown", {
+          leadId: existing.id,
+          project: existing.project,
+          customer: existing.customer,
+          action: "lead_deleted",
+          details: "Lead deleted",
+        });
+      }
     } catch (err) {
       console.error("Failed to delete lead from Firestore", err);
       alert("Lead deleted locally, but Firestore sync failed.");
@@ -457,6 +570,13 @@ export default function Home() {
         try {
           if (!user) throw new Error("Not authenticated");
           await replaceFirestoreLeads(normalized);
+          await addActivityRecord(user.email || "unknown", {
+            leadId: "backup-import",
+            project: "Backup Import",
+            customer: "Multiple",
+            action: "backup_imported",
+            details: `Imported ${normalized.length} leads from backup`,
+          });
           alert(`Import successful — ${normalized.length} leads restored.`);
         } catch (err) {
           console.error("Import sync to Firestore failed", err);
@@ -768,6 +888,29 @@ export default function Home() {
           </div>
         ))}
       </section>
+
+      <section style={activitySection}>
+        <h2 style={{ marginTop: 0 }}>Recent Activity</h2>
+        {recentActivity.length === 0 ? (
+          <p style={{ margin: 0, color: "#6b7280" }}>No recent activity yet.</p>
+        ) : (
+          <div style={activityList}>
+            {recentActivity.map((item) => (
+              <div key={item.id} style={activityItem}>
+                <p style={{ margin: 0, fontWeight: 700 }}>
+                  {item.action} - Project {item.project}
+                </p>
+                <p style={{ margin: "6px 0 0" }}>
+                  {item.customer} | {item.details}
+                </p>
+                <p style={activityMetaText}>
+                  {item.userEmail} | {item.createdAt}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </main>
   );
 }
@@ -885,4 +1028,30 @@ const userEmailText = {
   marginBottom: 0,
   fontSize: 13,
   color: "#4b5563",
+};
+
+const activitySection = {
+  marginTop: 24,
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 16,
+  background: "#fff",
+};
+
+const activityList = {
+  display: "grid",
+  gap: 10,
+};
+
+const activityItem = {
+  border: "1px solid #eee",
+  borderRadius: 10,
+  padding: 12,
+  background: "#fafafa",
+};
+
+const activityMetaText = {
+  margin: "6px 0 0",
+  color: "#6b7280",
+  fontSize: 12,
 };
