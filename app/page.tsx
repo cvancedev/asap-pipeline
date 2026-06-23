@@ -29,6 +29,7 @@ type Lead = {
   project: string;
   customer: string;
   phone: string;
+  email: string;
   moveDate: string;
   moveType: string;
   status: string;
@@ -48,6 +49,13 @@ type ActivityRecord = {
   details: string;
   userEmail: string;
   createdAt: string;
+};
+
+type ActivityMeta = {
+  label: string;
+  icon: string;
+  color: string;
+  actorText: string;
 };
 
 const statuses = [
@@ -97,6 +105,7 @@ function normalizeLead(lead: Partial<Lead>): Lead {
     project: lead.project || "",
     customer: lead.customer || "",
     phone: lead.phone || "",
+    email: lead.email || "",
     moveDate: lead.moveDate || "",
     moveType: lead.moveType || "",
     status: lead.status || "Hot Lead",
@@ -166,6 +175,23 @@ function subscribeToLeads(onStoreChange: () => void): () => void {
   };
 }
 
+function subscribeToIsMobile(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  const media = window.matchMedia("(max-width: 767px)");
+  const handleChange = () => onStoreChange();
+  media.addEventListener("change", handleChange);
+
+  return () => {
+    media.removeEventListener("change", handleChange);
+  };
+}
+
+function getIsMobileSnapshot(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+
 async function upsertLeadInFirestore(lead: Lead) {
   await setDoc(doc(leadsCollection, lead.id), lead, { merge: true });
 }
@@ -222,6 +248,112 @@ async function addActivityRecord(
   await setDoc(doc(activityCollection, id), activity);
 }
 
+function getActivityMeta(action: string): ActivityMeta {
+  switch (action) {
+    case "lead_created":
+      return {
+        label: "Created",
+        icon: "➕",
+        color: "#15803d",
+        actorText: "created lead",
+      };
+    case "status_changed":
+      return {
+        label: "Status Changed",
+        icon: "🔄",
+        color: "#2563eb",
+        actorText: "changed status",
+      };
+    case "lead_edited":
+      return {
+        label: "Edited",
+        icon: "✏️",
+        color: "#ea580c",
+        actorText: "edited lead",
+      };
+    case "lead_deleted":
+      return {
+        label: "Deleted",
+        icon: "🗑️",
+        color: "#dc2626",
+        actorText: "deleted lead",
+      };
+    case "backup_imported":
+      return {
+        label: "Import Backup",
+        icon: "📥",
+        color: "#7e22ce",
+        actorText: "imported backup",
+      };
+    default:
+      return {
+        label: "Activity",
+        icon: "•",
+        color: "#374151",
+        actorText: "updated lead",
+      };
+  }
+}
+
+function formatActivityTime(createdAt: string): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return createdAt;
+
+  const datePart = date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timePart = date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return `${datePart} ${timePart}`;
+}
+
+function formatActivityDetails(item: ActivityRecord): string {
+  if (item.action === "status_changed") {
+    const match = item.details.match(/status:\s*(.+)\s*->\s*(.+)/i);
+    if (match) {
+      return `${match[1]} → ${match[2]}`;
+    }
+  }
+  return item.details;
+}
+
+function formatActivityDay(createdAt: string): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "Unknown Day";
+
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getStatusCardVisual(status: string) {
+  switch (status) {
+    case "Hot Lead":
+      return { bg: "#fff7ed", border: "#fdba74" };
+    case "Waiting on Jacob":
+      return { bg: "#eff6ff", border: "#93c5fd" };
+    case "Waiting on Customer":
+      return { bg: "#fefce8", border: "#fde047" };
+    case "Waiting on ASAP":
+      return { bg: "#eef2ff", border: "#a5b4fc" };
+    case "Booked / Confirmed":
+      return { bg: "#ecfdf3", border: "#86efac" };
+    case "Lost / Closed":
+      return { bg: "#fef2f2", border: "#fca5a5" };
+    default:
+      return { bg: "#fff", border: "#ddd" };
+  }
+}
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const leads = useSyncExternalStore(
@@ -235,6 +367,13 @@ export default function Home() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [recentActivity, setRecentActivity] = useState<ActivityRecord[]>([]);
+  const [activityCount, setActivityCount] = useState(0);
+  const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
+  const isMobile = useSyncExternalStore(
+    subscribeToIsMobile,
+    getIsMobileSnapshot,
+    () => false,
+  );
 
   useEffect(() => {
     void setPersistence(auth, browserLocalPersistence).catch((err) => {
@@ -277,7 +416,7 @@ export default function Home() {
     const recentActivityQuery = query(
       activityCollection,
       orderBy("createdAt", "desc"),
-      limit(10),
+      limit(20),
     );
 
     const unsubscribe = onSnapshot(
@@ -306,10 +445,27 @@ export default function Home() {
     return () => unsubscribe();
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = onSnapshot(
+      activityCollection,
+      (snapshot) => {
+        setActivityCount(snapshot.size);
+      },
+      (err) => {
+        console.error("Failed to count activity", err);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
   const [form, setForm] = useState({
     project: "",
     customer: "",
     phone: "",
+    email: "",
     moveDate: "",
     moveType: "",
     status: "Hot Lead",
@@ -329,6 +485,24 @@ export default function Home() {
       {} as Record<string, number>,
     );
   }, [leads]);
+
+  const activityGroups = useMemo(() => {
+    const groups: Array<{ day: string; items: ActivityRecord[] }> = [];
+
+    recentActivity.forEach((item) => {
+      const day = formatActivityDay(item.createdAt);
+      const current = groups[groups.length - 1];
+
+      if (current && current.day === day) {
+        current.items.push(item);
+        return;
+      }
+
+      groups.push({ day, items: [item] });
+    });
+
+    return groups;
+  }, [recentActivity]);
 
   async function updateLead(id: string, updates: Partial<Lead>) {
     const existing = leads.find((lead) => lead.id === id);
@@ -363,6 +537,14 @@ export default function Home() {
       ) {
         detailParts.push("notes updated");
       }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "email") &&
+        updates.email !== existing.email
+      ) {
+        detailParts.push(
+          `email: ${existing.email || "none"} -> ${updatedLead.email || "none"}`,
+        );
+      }
 
       await addActivityRecord(user.email || "unknown", {
         leadId: updatedLead.id,
@@ -396,7 +578,7 @@ export default function Home() {
         project: newLead.project,
         customer: newLead.customer,
         action: "lead_created",
-        details: "Lead created",
+        details: `Lead created${newLead.email ? ` | email: ${newLead.email}` : ""}`,
       });
     } catch (err) {
       console.error("Failed to save new lead to Firestore", err);
@@ -411,6 +593,7 @@ export default function Home() {
       priority: "High",
       nextAction: "Follow up with customer",
       phone: "",
+      email: "",
       moveType: "",
       assignedTo: "Curt",
       lastContact: "",
@@ -454,7 +637,10 @@ export default function Home() {
     const notes = prompt("Edit notes", existing.notes);
     if (notes === null) return;
 
-    void updateLead(id, { customer: customer.trim(), notes });
+    const email = prompt("Edit email", existing.email);
+    if (email === null) return;
+
+    void updateLead(id, { customer: customer.trim(), notes, email: email.trim() });
   }
 
   function copySummary() {
@@ -615,6 +801,16 @@ export default function Home() {
     }
   }
 
+  function viewLead(leadId: string) {
+    const target = document.getElementById(`lead-${leadId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function toggleLeadNotes(leadId: string) {
+    setExpandedNotes((prev) => ({ ...prev, [leadId]: !prev[leadId] }));
+  }
+
   if (authLoading) {
     return (
       <main style={page}>
@@ -666,154 +862,180 @@ export default function Home() {
   return (
     <main style={page}>
       <header style={header}>
-        <div>
+        <div style={headerIdentity}>
           <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
-          <p style={{ marginTop: 8 }}>
-            Simple lead tracking for moving projects.
-          </p>
           <p style={userEmailText}>Signed in as: {user.email}</p>
         </div>
 
-        <button onClick={copySummary} style={primaryButton}>
-          Copy Summary
-        </button>
-        <button onClick={exportBackup} style={exportButton}>
-          Export Backup
-        </button>
-        <button onClick={handleImportClick} style={{ ...exportButton, marginLeft: 8 }}>
-          Import Backup
-        </button>
-        <button onClick={handleLogout} style={{ ...deleteButton, marginLeft: 8 }}>
-          Logout
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/json"
-          style={{ display: "none" }}
-          onChange={handleFileChange}
-        />
+        <div style={headerActions}>
+          <button
+            onClick={copySummary}
+            style={{ ...primaryButton, ...(isMobile ? mobileButton : {}) }}
+          >
+            Copy Summary
+          </button>
+          <button
+            onClick={exportBackup}
+            style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
+          >
+            Export Backup
+          </button>
+          <button
+            onClick={handleImportClick}
+            style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
+          >
+            Import Backup
+          </button>
+          <button
+            onClick={handleLogout}
+            style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
+          >
+            Logout
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={handleFileChange}
+          />
+        </div>
       </header>
 
       <section style={statsGrid}>
         {statuses.map((status) => (
-          <div key={status} style={statCard}>
+          <div
+            key={status}
+            style={{
+              ...statCard,
+              background: getStatusCardVisual(status).bg,
+              borderColor: getStatusCardVisual(status).border,
+            }}
+          >
             <p style={statLabel}>{status}</p>
             <h2 style={statNumber}>{counts[status] || 0}</h2>
           </div>
         ))}
       </section>
 
-      <form onSubmit={addLead} style={formGrid}>
-        <input
-          style={input}
-          placeholder="Project #"
-          value={form.project}
-          onChange={(e) => setForm({ ...form, project: e.target.value })}
-        />
-
-        <input
-          style={input}
-          placeholder="Customer Name"
-          value={form.customer}
-          onChange={(e) => setForm({ ...form, customer: e.target.value })}
-        />
-
-        <input
-          style={input}
-          placeholder="Phone Number"
-          value={form.phone}
-          onChange={(e) => setForm({ ...form, phone: e.target.value })}
-        />
-
-        <label style={fieldLabel}>
-          Move Date
+      <section style={formSection}>
+        <h2 style={sectionTitle}>Add Lead</h2>
+        <form onSubmit={addLead} style={formGrid}>
           <input
             style={input}
-            type="date"
-            value={form.moveDate}
-            onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
+            placeholder="Project #"
+            value={form.project}
+            onChange={(e) => setForm({ ...form, project: e.target.value })}
           />
-        </label>
 
-        <label style={fieldLabel}>
-          Last Contact
           <input
             style={input}
-            type="date"
-            value={form.lastContact}
-            onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+            placeholder="Customer Name"
+            value={form.customer}
+            onChange={(e) => setForm({ ...form, customer: e.target.value })}
           />
-        </label>
 
-        <select
-          style={input}
-          value={form.moveType}
-          onChange={(e) => setForm({ ...form, moveType: e.target.value })}
-        >
-          <option value="">Move Type</option>
-          {moveTypes.map((type) => (
-            <option key={type}>{type}</option>
-          ))}
-        </select>
+          <input
+            style={input}
+            placeholder="Phone Number"
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+          />
 
-        <select
-          style={input}
-          value={form.assignedTo}
-          onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
-        >
-          {assignedUsers.map((user) => (
-            <option key={user}>{user}</option>
-          ))}
-        </select>
+          <input
+            style={input}
+            type="email"
+            placeholder="Email Address"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+          />
 
-        <select
-          style={input}
-          value={form.status}
-          onChange={(e) => setForm({ ...form, status: e.target.value })}
-        >
-          {statuses.map((status) => (
-            <option key={status}>{status}</option>
-          ))}
-        </select>
+          <label style={fieldLabel}>
+            Move Date
+            <input
+              style={input}
+              type="date"
+              value={form.moveDate}
+              onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
+            />
+          </label>
 
-        <select
-          style={input}
-          value={form.priority}
-          onChange={(e) => setForm({ ...form, priority: e.target.value })}
-        >
-          <option>High</option>
-          <option>Medium</option>
-          <option>Low</option>
-        </select>
+          <label style={fieldLabel}>
+            Last Contact
+            <input
+              style={input}
+              type="date"
+              value={form.lastContact}
+              onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+            />
+          </label>
 
-        <select
-          style={input}
-          value={form.nextAction}
-          onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
-        >
-          {nextActions.map((action) => (
-            <option key={action}>{action}</option>
-          ))}
-        </select>
+          <select
+            style={input}
+            value={form.moveType}
+            onChange={(e) => setForm({ ...form, moveType: e.target.value })}
+          >
+            <option value="">Move Type</option>
+            {moveTypes.map((type) => (
+              <option key={type}>{type}</option>
+            ))}
+          </select>
 
-        <button type="submit" style={primaryButton}>
-          Add Lead
-        </button>
-      </form>
-      <textarea
-        style={{
-          width: "100%",
-          padding: "12px",
-          minHeight: "120px",
-          marginTop: "16px",
-          border: "1px solid #ccc",
-          borderRadius: "8px",
-        }}
-        placeholder="Customer notes..."
-        value={form.notes}
-        onChange={(e) => setForm({ ...form, notes: e.target.value })}
-      />
+          <select
+            style={input}
+            value={form.assignedTo}
+            onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
+          >
+            {assignedUsers.map((user) => (
+              <option key={user}>{user}</option>
+            ))}
+          </select>
+
+          <select
+            style={input}
+            value={form.status}
+            onChange={(e) => setForm({ ...form, status: e.target.value })}
+          >
+            {statuses.map((status) => (
+              <option key={status}>{status}</option>
+            ))}
+          </select>
+
+          <select
+            style={input}
+            value={form.priority}
+            onChange={(e) => setForm({ ...form, priority: e.target.value })}
+          >
+            <option>High</option>
+            <option>Medium</option>
+            <option>Low</option>
+          </select>
+
+          <select
+            style={input}
+            value={form.nextAction}
+            onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
+          >
+            {nextActions.map((action) => (
+              <option key={action}>{action}</option>
+            ))}
+          </select>
+
+          <textarea
+            style={notesInput}
+            placeholder="Customer notes..."
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          />
+
+          <button
+            type="submit"
+            style={{ ...addLeadButton, ...(isMobile ? mobileButton : {}) }}
+          >
+            Add Lead
+          </button>
+        </form>
+      </section>
 
       <section style={board}>
         {statuses.map((status) => (
@@ -824,41 +1046,57 @@ export default function Home() {
               .filter((lead) => lead.status === status)
               .map((lead) => (
                 <div key={lead.id} style={leadCard}>
+                  <div id={`lead-${lead.id}`} />
                   <strong>Project {lead.project}</strong>
 
-                  <p>{lead.customer}</p>
+                  <p style={leadLine}>{lead.customer}</p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Phone:</b> {lead.phone}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
+                    <b>Email:</b> {lead.email || "N/A"}
+                  </p>
+
+                  <p style={leadLine}>
                     <b>Move Type:</b> {lead.moveType || "N/A"}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Assigned:</b> {lead.assignedTo}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Last Contact:</b> {lead.lastContact || "N/A"}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Date:</b> {lead.moveDate || "TBD"}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Priority:</b> {lead.priority}
                   </p>
 
-                  <p>
+                  <p style={leadLine}>
                     <b>Next:</b> {lead.nextAction}
                   </p>
 
-                  <p>
-                    <b>Notes:</b> {lead.notes}
+                  <p style={leadNotes}>
+                    <b>Notes:</b>{" "}
+                    {expandedNotes[lead.id] || lead.notes.length <= 120
+                      ? lead.notes
+                      : `${lead.notes.slice(0, 120)}...`}
                   </p>
+                  {lead.notes.length > 120 ? (
+                    <button
+                      onClick={() => toggleLeadNotes(lead.id)}
+                      style={{ ...activityViewButton, ...(isMobile ? mobileButton : {}) }}
+                    >
+                      {expandedNotes[lead.id] ? "Show less" : "Show more"}
+                    </button>
+                  ) : null}
 
                   <select
                     style={input}
@@ -870,19 +1108,21 @@ export default function Home() {
                     ))}
                   </select>
 
-                  <button
-                    onClick={() => deleteLead(lead.id)}
-                    style={deleteButton}
-                  >
-                    Delete
-                  </button>
+                  <div style={leadActions}>
+                    <button
+                      onClick={() => deleteLead(lead.id)}
+                      style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
+                    >
+                      Delete
+                    </button>
 
-                  <button
-                    onClick={() => editLead(lead.id)}
-                    style={deleteButton}
-                  >
-                    Edit
-                  </button>
+                    <button
+                      onClick={() => editLead(lead.id)}
+                      style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
+                    >
+                      Edit
+                    </button>
+                  </div>
                 </div>
               ))}
           </div>
@@ -890,22 +1130,50 @@ export default function Home() {
       </section>
 
       <section style={activitySection}>
-        <h2 style={{ marginTop: 0 }}>Recent Activity</h2>
+        <h2 style={{ marginTop: 0 }}>Recent Activity ({activityCount})</h2>
         {recentActivity.length === 0 ? (
           <p style={{ margin: 0, color: "#6b7280" }}>No recent activity yet.</p>
         ) : (
           <div style={activityList}>
-            {recentActivity.map((item) => (
-              <div key={item.id} style={activityItem}>
-                <p style={{ margin: 0, fontWeight: 700 }}>
-                  {item.action} - Project {item.project}
-                </p>
-                <p style={{ margin: "6px 0 0" }}>
-                  {item.customer} | {item.details}
-                </p>
-                <p style={activityMetaText}>
-                  {item.userEmail} | {item.createdAt}
-                </p>
+            {activityGroups.map((group) => (
+              <div key={group.day} style={activityDayGroup}>
+                <h3 style={activityDayTitle}>{group.day}</h3>
+                {group.items.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      ...activityItem,
+                      borderLeft: `6px solid ${getActivityMeta(item.action).color}`,
+                    }}
+                  >
+                    <p
+                      style={{
+                        margin: 0,
+                        fontWeight: 700,
+                        color: getActivityMeta(item.action).color,
+                      }}
+                    >
+                      [{getActivityMeta(item.action).icon} {getActivityMeta(item.action).label}]
+                    </p>
+                    <p style={{ margin: "8px 0 0", fontWeight: 700 }}>
+                      Project {item.project} - {item.customer}
+                    </p>
+                    <p style={{ margin: "6px 0 0" }}>
+                      {item.userEmail.split("@")[0]} {getActivityMeta(item.action).actorText}
+                    </p>
+                    <p style={{ margin: "6px 0 0" }}>{formatActivityDetails(item)}</p>
+                    <p style={activityMetaText}>{formatActivityTime(item.createdAt)}</p>
+                    <p style={{ ...activityMetaText, marginTop: 4 }}>{item.userEmail}</p>
+                    {leads.some((lead) => lead.id === item.leadId) ? (
+                      <button
+                        onClick={() => viewLead(item.leadId)}
+                        style={{ ...activityViewButton, ...(isMobile ? mobileButton : {}) }}
+                      >
+                        View Lead
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -916,38 +1184,97 @@ export default function Home() {
 }
 
 const page = {
-  padding: 24,
+  width: "100%",
+  maxWidth: 1280,
+  margin: "0 auto",
+  padding: 16,
+  boxSizing: "border-box" as const,
+  overflowX: "hidden" as const,
   fontFamily: "Arial, sans-serif",
   background: "#f6f7f9",
   minHeight: "100vh",
+  display: "grid",
+  gap: 22,
 };
 const header = {
   display: "flex",
   justifyContent: "space-between",
-  alignItems: "center",
+  alignItems: "flex-start",
   gap: 16,
+  flexWrap: "wrap" as const,
+  padding: 16,
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  background: "#fff",
+};
+const headerIdentity = {
+  minWidth: 240,
+  display: "grid",
+  gap: 8,
+};
+const headerActions = {
+  display: "flex",
+  flexWrap: "wrap" as const,
+  gap: 8,
+  justifyContent: "flex-end",
+  marginLeft: "auto",
+  width: "100%",
+  maxWidth: 540,
 };
 const statsGrid = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: 12,
-  marginTop: 24,
+  gap: 14,
 };
 const statCard = {
   background: "#fff",
   border: "1px solid #ddd",
   borderRadius: 12,
-  padding: 16,
+  padding: 18,
+  minHeight: 110,
+  display: "grid",
+  alignContent: "space-between",
 };
-const statLabel = { margin: 0, color: "#555", fontSize: 14 };
-const statNumber = { margin: "8px 0 0", fontSize: 32 };
+const statLabel = { margin: 0, color: "#555", fontSize: 14, fontWeight: 600 };
+const statNumber = {
+  margin: "12px 0 0",
+  fontSize: 42,
+  lineHeight: 1,
+  fontWeight: 700,
+  color: "#111827",
+};
+const formSection = {
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 16,
+  background: "#fff",
+};
+const sectionTitle = {
+  marginTop: 0,
+  marginBottom: 14,
+};
 const formGrid = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: 10,
-  marginTop: 24,
+  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+  gap: 12,
 };
-const input = { padding: 10, border: "1px solid #ccc", borderRadius: 8 };
+const input = {
+  width: "100%",
+  padding: 10,
+  border: "1px solid #ccc",
+  borderRadius: 8,
+  boxSizing: "border-box" as const,
+};
+const notesInput = {
+  gridColumn: "1 / -1",
+  width: "100%",
+  minHeight: 120,
+  padding: 12,
+  border: "1px solid #ccc",
+  borderRadius: 8,
+  boxSizing: "border-box" as const,
+  resize: "vertical" as const,
+};
 const primaryButton = {
   padding: "10px 14px",
   border: 0,
@@ -956,25 +1283,54 @@ const primaryButton = {
   color: "#fff",
   cursor: "pointer",
 };
+const addLeadButton = {
+  ...primaryButton,
+  gridColumn: "1 / -1",
+  padding: "12px 16px",
+  background: "#0f766e",
+  fontWeight: 700,
+};
 const board = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-  gap: 14,
-  marginTop: 24,
+  gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+  gap: 16,
 };
 const column = {
   background: "#fff",
   border: "1px solid #ddd",
   borderRadius: 12,
-  padding: 12,
+  padding: 14,
+  minWidth: 0,
 };
 const columnTitle = { fontSize: 16 };
 const leadCard = {
   border: "1px solid #eee",
   borderRadius: 10,
-  padding: 12,
-  marginBottom: 10,
+  padding: 10,
+  marginBottom: 8,
   background: "#fafafa",
+  minWidth: 0,
+  fontSize: 14,
+};
+const leadLine = {
+  margin: "6px 0 0",
+  lineHeight: 1.35,
+  overflowWrap: "anywhere" as const,
+};
+const leadNotes = {
+  margin: "8px 0 0",
+  lineHeight: 1.35,
+  color: "#374151",
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 8,
+  padding: 8,
+  overflowWrap: "anywhere" as const,
+};
+const leadActions = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap" as const,
 };
 const deleteButton = {
   marginTop: 8,
@@ -992,7 +1348,6 @@ const exportButton = {
   background: "#fff",
   color: "#111827",
   cursor: "pointer",
-  marginLeft: 8,
 };
 
 const fieldLabel = {
@@ -1031,16 +1386,16 @@ const userEmailText = {
 };
 
 const activitySection = {
-  marginTop: 24,
   border: "1px solid #ddd",
   borderRadius: 12,
-  padding: 16,
+  padding: 18,
   background: "#fff",
 };
 
 const activityList = {
   display: "grid",
   gap: 10,
+  gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
 };
 
 const activityItem = {
@@ -1050,8 +1405,35 @@ const activityItem = {
   background: "#fafafa",
 };
 
+const activityDayGroup = {
+  display: "grid",
+  gap: 8,
+};
+
+const activityDayTitle = {
+  margin: "8px 0 0",
+  fontSize: 14,
+  color: "#4b5563",
+  letterSpacing: 0.2,
+  textTransform: "uppercase" as const,
+};
+
 const activityMetaText = {
   margin: "6px 0 0",
   color: "#6b7280",
   fontSize: 12,
+};
+
+const activityViewButton = {
+  marginTop: 10,
+  padding: "8px 10px",
+  border: "1px solid #ddd",
+  borderRadius: 8,
+  background: "#fff",
+  cursor: "pointer",
+};
+
+const mobileButton = {
+  width: "100%",
+  marginLeft: 0,
 };
