@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   collection,
-  deleteDoc,
   doc,
   limit,
   getDocs,
@@ -11,7 +10,6 @@ import {
   orderBy,
   query,
   setDoc,
-  where,
   writeBatch,
 } from "firebase/firestore";
 import {
@@ -30,6 +28,12 @@ type Lead = {
   customer: string;
   phone: string;
   email: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+  archivedAt: string;
+  archivedBy: string;
+  previousStatus: string;
   moveDate: string;
   moveType: string;
   status: string;
@@ -57,6 +61,26 @@ type ActivityMeta = {
   color: string;
   actorText: string;
 };
+
+type ActivityFilter =
+  | "all"
+  | "lead_created"
+  | "lead_edited"
+  | "status_changed"
+  | "lead_deleted"
+  | "lead_archived"
+  | "lead_restored"
+  | "backup_imported";
+
+const activityFilterButtons: Array<{ label: string; value: ActivityFilter }> = [
+  { label: "All", value: "all" },
+  { label: "Created", value: "lead_created" },
+  { label: "Edited", value: "lead_edited" },
+  { label: "Status Changed", value: "status_changed" },
+  { label: "Archived", value: "lead_archived" },
+  { label: "Restored", value: "lead_restored" },
+  { label: "Import Backup", value: "backup_imported" },
+];
 
 const statuses = [
   "Hot Lead",
@@ -99,13 +123,26 @@ const activityCollection = collection(db, "activity");
 let cachedLeadsRaw: string | null = null;
 let cachedLeadsSnapshot: Lead[] = EMPTY_LEADS;
 
+function getCurrentTimestamp(): string {
+  return new Date().toISOString();
+}
+
 function normalizeLead(lead: Partial<Lead>): Lead {
+  const createdAt = lead.createdAt || getCurrentTimestamp();
+  const updatedAt = lead.updatedAt || lead.createdAt || getCurrentTimestamp();
+
   return {
     id: lead.id || crypto.randomUUID(),
     project: lead.project || "",
     customer: lead.customer || "",
     phone: lead.phone || "",
     email: lead.email || "",
+    createdAt,
+    updatedAt,
+    archived: Boolean(lead.archived),
+    archivedAt: lead.archivedAt || "",
+    archivedBy: lead.archivedBy || "",
+    previousStatus: lead.previousStatus || "",
     moveDate: lead.moveDate || "",
     moveType: lead.moveType || "",
     status: lead.status || "Hot Lead",
@@ -196,23 +233,6 @@ async function upsertLeadInFirestore(lead: Lead) {
   await setDoc(doc(leadsCollection, lead.id), lead, { merge: true });
 }
 
-async function deleteLeadInFirestore(leadId: string) {
-  await deleteDoc(doc(leadsCollection, leadId));
-
-  // Cleanup legacy docs created before stable document IDs were used.
-  const legacySnapshot = await getDocs(
-    query(leadsCollection, where("id", "==", leadId)),
-  );
-
-  if (!legacySnapshot.empty) {
-    const batch = writeBatch(db);
-    legacySnapshot.docs.forEach((docSnapshot) => {
-      batch.delete(docSnapshot.ref);
-    });
-    await batch.commit();
-  }
-}
-
 async function replaceFirestoreLeads(leads: Lead[]) {
   const snapshot = await getDocs(leadsCollection);
   const leadIds = new Set(leads.map((lead) => lead.id));
@@ -277,6 +297,20 @@ function getActivityMeta(action: string): ActivityMeta {
         icon: "🗑️",
         color: "#dc2626",
         actorText: "deleted lead",
+      };
+    case "lead_archived":
+      return {
+        label: "Archived",
+        icon: "📦",
+        color: "#9333ea",
+        actorText: "archived lead",
+      };
+    case "lead_restored":
+      return {
+        label: "Restored",
+        icon: "↩️",
+        color: "#0f766e",
+        actorText: "restored lead",
       };
     case "backup_imported":
       return {
@@ -367,8 +401,10 @@ export default function Home() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [recentActivity, setRecentActivity] = useState<ActivityRecord[]>([]);
-  const [activityCount, setActivityCount] = useState(0);
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived">("dashboard");
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
+  const [searchTerm, setSearchTerm] = useState("");
   const isMobile = useSyncExternalStore(
     subscribeToIsMobile,
     getIsMobileSnapshot,
@@ -445,22 +481,6 @@ export default function Home() {
     return () => unsubscribe();
   }, [user]);
 
-  useEffect(() => {
-    if (!user) return;
-
-    const unsubscribe = onSnapshot(
-      activityCollection,
-      (snapshot) => {
-        setActivityCount(snapshot.size);
-      },
-      (err) => {
-        console.error("Failed to count activity", err);
-      },
-    );
-
-    return () => unsubscribe();
-  }, [user]);
-
   const [form, setForm] = useState({
     project: "",
     customer: "",
@@ -476,20 +496,64 @@ export default function Home() {
     notes: "",
   });
 
+  const nonArchivedLeads = useMemo(
+    () => leads.filter((lead) => !lead.archived),
+    [leads],
+  );
+
+  const archivedLeads = useMemo(
+    () => leads.filter((lead) => lead.archived),
+    [leads],
+  );
+
   const counts = useMemo(() => {
     return statuses.reduce(
       (acc, status) => {
-        acc[status] = leads.filter((lead) => lead.status === status).length;
+        acc[status] = nonArchivedLeads.filter((lead) => lead.status === status).length;
         return acc;
       },
       {} as Record<string, number>,
     );
-  }, [leads]);
+  }, [nonArchivedLeads]);
+
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+
+  const filteredLeads = useMemo(() => {
+    if (!normalizedSearchTerm) return nonArchivedLeads;
+
+    return nonArchivedLeads.filter((lead) => {
+      return [lead.project, lead.customer, lead.phone, lead.email]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearchTerm);
+    });
+  }, [nonArchivedLeads, normalizedSearchTerm]);
+
+  const filteredArchivedLeads = useMemo(() => {
+    if (!normalizedSearchTerm) return archivedLeads;
+
+    return archivedLeads.filter((lead) => {
+      return [lead.project, lead.customer, lead.phone, lead.email]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearchTerm);
+    });
+  }, [archivedLeads, normalizedSearchTerm]);
+
+  const hasSearch = normalizedSearchTerm.length > 0;
+  const visibleLeads = filteredLeads;
+  const visibleArchivedLeads = filteredArchivedLeads;
+
+  const filteredActivity = useMemo(() => {
+    return recentActivity.filter(
+      (item) => activityFilter === "all" || item.action === activityFilter,
+    );
+  }, [recentActivity, activityFilter]);
 
   const activityGroups = useMemo(() => {
     const groups: Array<{ day: string; items: ActivityRecord[] }> = [];
 
-    recentActivity.forEach((item) => {
+    filteredActivity.forEach((item) => {
       const day = formatActivityDay(item.createdAt);
       const current = groups[groups.length - 1];
 
@@ -502,13 +566,30 @@ export default function Home() {
     });
 
     return groups;
+  }, [filteredActivity]);
+
+  const visibleActivityCount = filteredActivity.length;
+
+  const activityFilterCounts = useMemo(() => {
+    return activityFilterButtons.reduce((acc, button) => {
+      acc[button.value] = recentActivity.filter(
+        (item) => button.value === "all" || item.action === button.value,
+      ).length;
+      return acc;
+    }, {} as Record<ActivityFilter, number>);
   }, [recentActivity]);
+
+  const hasActivity = visibleActivityCount > 0;
 
   async function updateLead(id: string, updates: Partial<Lead>) {
     const existing = leads.find((lead) => lead.id === id);
     if (!existing) return;
 
-    const updatedLead = normalizeLead({ ...existing, ...updates });
+    const updatedLead = normalizeLead({
+      ...existing,
+      ...updates,
+      updatedAt: getCurrentTimestamp(),
+    });
     writeStoredLeads(leads.map((lead) => (lead.id === id ? updatedLead : lead)));
 
     try {
@@ -563,9 +644,17 @@ export default function Home() {
     e.preventDefault();
     if (!form.project || !form.customer) return;
 
+    const now = getCurrentTimestamp();
+
     const newLead: Lead = {
       id: crypto.randomUUID(),
       ...form,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+      archivedAt: "",
+      archivedBy: "",
+      previousStatus: "",
     };
 
     writeStoredLeads([newLead, ...leads]);
@@ -605,25 +694,68 @@ export default function Home() {
     void updateLead(id, { status });
   }
 
-  async function deleteLead(id: string) {
+  async function archiveLead(id: string) {
     const existing = leads.find((lead) => lead.id === id);
-    writeStoredLeads(leads.filter((lead) => lead.id !== id));
+    if (!existing) return;
+
+    const updatedLead = normalizeLead({
+      ...existing,
+      archived: true,
+      archivedAt: getCurrentTimestamp(),
+      archivedBy: user?.email || "unknown",
+      previousStatus: existing.status === "Archived" ? existing.previousStatus : existing.status,
+      status: "Archived",
+      updatedAt: getCurrentTimestamp(),
+    });
+
+    writeStoredLeads(leads.map((lead) => (lead.id === id ? updatedLead : lead)));
 
     try {
       if (!user) return;
-      await deleteLeadInFirestore(id);
-      if (existing) {
-        await addActivityRecord(user.email || "unknown", {
-          leadId: existing.id,
-          project: existing.project,
-          customer: existing.customer,
-          action: "lead_deleted",
-          details: "Lead deleted",
-        });
-      }
+      await upsertLeadInFirestore(updatedLead);
+      await addActivityRecord(user.email || "unknown", {
+        leadId: updatedLead.id,
+        project: updatedLead.project,
+        customer: updatedLead.customer,
+        action: "lead_archived",
+        details: "Lead archived",
+      });
     } catch (err) {
-      console.error("Failed to delete lead from Firestore", err);
-      alert("Lead deleted locally, but Firestore sync failed.");
+      console.error("Failed to archive lead", err);
+      alert("Lead archived locally, but Firestore sync failed.");
+    }
+  }
+
+  async function restoreLead(id: string) {
+    const existing = leads.find((lead) => lead.id === id);
+    if (!existing) return;
+
+    const restoredStatus = existing.previousStatus || "Hot Lead";
+    const updatedLead = normalizeLead({
+      ...existing,
+      archived: false,
+      archivedAt: "",
+      archivedBy: "",
+      status: restoredStatus,
+      previousStatus: "",
+      updatedAt: getCurrentTimestamp(),
+    });
+
+    writeStoredLeads(leads.map((lead) => (lead.id === id ? updatedLead : lead)));
+
+    try {
+      if (!user) return;
+      await upsertLeadInFirestore(updatedLead);
+      await addActivityRecord(user.email || "unknown", {
+        leadId: updatedLead.id,
+        project: updatedLead.project,
+        customer: updatedLead.customer,
+        action: "lead_restored",
+        details: "Lead restored",
+      });
+    } catch (err) {
+      console.error("Failed to restore lead", err);
+      alert("Lead restored locally, but Firestore sync failed.");
     }
   }
 
@@ -646,7 +778,7 @@ export default function Home() {
   function copySummary() {
     const summary = statuses
       .map((status) => {
-        const items = leads.filter((lead) => lead.status === status);
+        const items = nonArchivedLeads.filter((lead) => lead.status === status);
         if (!items.length) return "";
 
         return `${status}\n${items
@@ -902,283 +1034,449 @@ export default function Home() {
         </div>
       </header>
 
-      <section style={statsGrid}>
-        {statuses.map((status) => (
-          <div
-            key={status}
-            style={{
-              ...statCard,
-              background: getStatusCardVisual(status).bg,
-              borderColor: getStatusCardVisual(status).border,
-            }}
-          >
-            <p style={statLabel}>{status}</p>
-            <h2 style={statNumber}>{counts[status] || 0}</h2>
-          </div>
-        ))}
+      <section style={searchSection}>
+        <div style={searchRow}>
+          <input
+            style={searchInput}
+            type="search"
+            placeholder="Search project, customer, phone, or email..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          {hasSearch ? (
+            <button
+              type="button"
+              onClick={() => setSearchTerm("")}
+              style={{ ...clearSearchButton, ...(isMobile ? mobileButton : {}) }}
+            >
+              Clear Search
+            </button>
+          ) : null}
+        </div>
+        {hasSearch ? (
+          <p style={searchFeedbackText}>
+            Showing {activeTab === "archived" ? filteredArchivedLeads.length : filteredLeads.length} result(s) for: {searchTerm.trim()}
+          </p>
+        ) : null}
       </section>
 
-      <section style={formSection}>
-        <h2 style={sectionTitle}>Add Lead</h2>
-        <form onSubmit={addLead} style={formGrid}>
-          <input
-            style={input}
-            placeholder="Project #"
-            value={form.project}
-            onChange={(e) => setForm({ ...form, project: e.target.value })}
-          />
-
-          <input
-            style={input}
-            placeholder="Customer Name"
-            value={form.customer}
-            onChange={(e) => setForm({ ...form, customer: e.target.value })}
-          />
-
-          <input
-            style={input}
-            placeholder="Phone Number"
-            value={form.phone}
-            onChange={(e) => setForm({ ...form, phone: e.target.value })}
-          />
-
-          <input
-            style={input}
-            type="email"
-            placeholder="Email Address"
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-          />
-
-          <label style={fieldLabel}>
-            Move Date
-            <input
-              style={input}
-              type="date"
-              value={form.moveDate}
-              onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
-            />
-          </label>
-
-          <label style={fieldLabel}>
-            Last Contact
-            <input
-              style={input}
-              type="date"
-              value={form.lastContact}
-              onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
-            />
-          </label>
-
-          <select
-            style={input}
-            value={form.moveType}
-            onChange={(e) => setForm({ ...form, moveType: e.target.value })}
-          >
-            <option value="">Move Type</option>
-            {moveTypes.map((type) => (
-              <option key={type}>{type}</option>
-            ))}
-          </select>
-
-          <select
-            style={input}
-            value={form.assignedTo}
-            onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
-          >
-            {assignedUsers.map((user) => (
-              <option key={user}>{user}</option>
-            ))}
-          </select>
-
-          <select
-            style={input}
-            value={form.status}
-            onChange={(e) => setForm({ ...form, status: e.target.value })}
-          >
-            {statuses.map((status) => (
-              <option key={status}>{status}</option>
-            ))}
-          </select>
-
-          <select
-            style={input}
-            value={form.priority}
-            onChange={(e) => setForm({ ...form, priority: e.target.value })}
-          >
-            <option>High</option>
-            <option>Medium</option>
-            <option>Low</option>
-          </select>
-
-          <select
-            style={input}
-            value={form.nextAction}
-            onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
-          >
-            {nextActions.map((action) => (
-              <option key={action}>{action}</option>
-            ))}
-          </select>
-
-          <textarea
-            style={notesInput}
-            placeholder="Customer notes..."
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-          />
-
-          <button
-            type="submit"
-            style={{ ...addLeadButton, ...(isMobile ? mobileButton : {}) }}
-          >
-            Add Lead
-          </button>
-        </form>
+      <section style={tabBar}>
+        <button
+          type="button"
+          onClick={() => setActiveTab("dashboard")}
+          style={{ ...tabButton, ...(activeTab === "dashboard" ? tabButtonActive : {}) }}
+        >
+          Dashboard
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("activity")}
+          style={{ ...tabButton, ...(activeTab === "activity" ? tabButtonActive : {}) }}
+        >
+          Activity
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("archived")}
+          style={{ ...tabButton, ...(activeTab === "archived" ? tabButtonActive : {}) }}
+        >
+          Archived ({archivedLeads.length})
+        </button>
       </section>
 
-      <section style={board}>
-        {statuses.map((status) => (
-          <div key={status} style={column}>
-            <h2 style={columnTitle}>{status}</h2>
+      {activeTab === "dashboard" ? (
+        <>
+              <section style={statsGrid}>
+                {statuses.map((status) => (
+                  <div
+                    key={status}
+                    style={{
+                      ...statCard,
+                      background: getStatusCardVisual(status).bg,
+                      borderColor: getStatusCardVisual(status).border,
+                    }}
+                  >
+                    <p style={statLabel}>{status}</p>
+                    <h2 style={statNumber}>{counts[status] || 0}</h2>
+                  </div>
+                ))}
+              </section>
 
-            {leads
-              .filter((lead) => lead.status === status)
-              .map((lead) => (
-                <div key={lead.id} style={leadCard}>
-                  <div id={`lead-${lead.id}`} />
-                  <strong>Project {lead.project}</strong>
+              <section style={formSection}>
+                <h2 style={sectionTitle}>Add Lead</h2>
+                <form onSubmit={addLead} style={formGrid}>
+                  <input
+                    style={input}
+                    placeholder="Project #"
+                    value={form.project}
+                    onChange={(e) => setForm({ ...form, project: e.target.value })}
+                  />
 
-                  <p style={leadLine}>{lead.customer}</p>
+                  <input
+                    style={input}
+                    placeholder="Customer Name"
+                    value={form.customer}
+                    onChange={(e) => setForm({ ...form, customer: e.target.value })}
+                  />
 
-                  <p style={leadLine}>
-                    <b>Phone:</b> {lead.phone}
-                  </p>
+                  <input
+                    style={input}
+                    placeholder="Phone Number"
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  />
 
-                  <p style={leadLine}>
-                    <b>Email:</b> {lead.email || "N/A"}
-                  </p>
+                  <input
+                    style={input}
+                    type="email"
+                    placeholder="Email Address"
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  />
 
-                  <p style={leadLine}>
-                    <b>Move Type:</b> {lead.moveType || "N/A"}
-                  </p>
+                  <label style={fieldLabel}>
+                    Move Date
+                    <input
+                      style={input}
+                      type="date"
+                      value={form.moveDate}
+                      onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
+                    />
+                  </label>
 
-                  <p style={leadLine}>
-                    <b>Assigned:</b> {lead.assignedTo}
-                  </p>
-
-                  <p style={leadLine}>
-                    <b>Last Contact:</b> {lead.lastContact || "N/A"}
-                  </p>
-
-                  <p style={leadLine}>
-                    <b>Date:</b> {lead.moveDate || "TBD"}
-                  </p>
-
-                  <p style={leadLine}>
-                    <b>Priority:</b> {lead.priority}
-                  </p>
-
-                  <p style={leadLine}>
-                    <b>Next:</b> {lead.nextAction}
-                  </p>
-
-                  <p style={leadNotes}>
-                    <b>Notes:</b>{" "}
-                    {expandedNotes[lead.id] || lead.notes.length <= 120
-                      ? lead.notes
-                      : `${lead.notes.slice(0, 120)}...`}
-                  </p>
-                  {lead.notes.length > 120 ? (
-                    <button
-                      onClick={() => toggleLeadNotes(lead.id)}
-                      style={{ ...activityViewButton, ...(isMobile ? mobileButton : {}) }}
-                    >
-                      {expandedNotes[lead.id] ? "Show less" : "Show more"}
-                    </button>
-                  ) : null}
+                  <label style={fieldLabel}>
+                    Last Contact
+                    <input
+                      style={input}
+                      type="date"
+                      value={form.lastContact}
+                      onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+                    />
+                  </label>
 
                   <select
                     style={input}
-                    value={lead.status}
-                    onChange={(e) => updateStatus(lead.id, e.target.value)}
+                    value={form.moveType}
+                    onChange={(e) => setForm({ ...form, moveType: e.target.value })}
                   >
-                    {statuses.map((s) => (
-                      <option key={s}>{s}</option>
+                    <option value="">Move Type</option>
+                    {moveTypes.map((type) => (
+                      <option key={type}>{type}</option>
                     ))}
                   </select>
 
-                  <div style={leadActions}>
-                    <button
-                      onClick={() => deleteLead(lead.id)}
-                      style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
-                    >
-                      Delete
-                    </button>
-
-                    <button
-                      onClick={() => editLead(lead.id)}
-                      style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
-                    >
-                      Edit
-                    </button>
-                  </div>
-                </div>
-              ))}
-          </div>
-        ))}
-      </section>
-
-      <section style={activitySection}>
-        <h2 style={{ marginTop: 0 }}>Recent Activity ({activityCount})</h2>
-        {recentActivity.length === 0 ? (
-          <p style={{ margin: 0, color: "#6b7280" }}>No recent activity yet.</p>
-        ) : (
-          <div style={activityList}>
-            {activityGroups.map((group) => (
-              <div key={group.day} style={activityDayGroup}>
-                <h3 style={activityDayTitle}>{group.day}</h3>
-                {group.items.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      ...activityItem,
-                      borderLeft: `6px solid ${getActivityMeta(item.action).color}`,
-                    }}
+                  <select
+                    style={input}
+                    value={form.assignedTo}
+                    onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
                   >
-                    <p
+                    {assignedUsers.map((user) => (
+                      <option key={user}>{user}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    style={input}
+                    value={form.status}
+                    onChange={(e) => setForm({ ...form, status: e.target.value })}
+                  >
+                    {statuses.map((status) => (
+                      <option key={status}>{status}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    style={input}
+                    value={form.priority}
+                    onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                  >
+                    <option>High</option>
+                    <option>Medium</option>
+                    <option>Low</option>
+                  </select>
+
+                  <select
+                    style={input}
+                    value={form.nextAction}
+                    onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
+                  >
+                    {nextActions.map((action) => (
+                      <option key={action}>{action}</option>
+                    ))}
+                  </select>
+
+                  <textarea
+                    style={notesInput}
+                    placeholder="Customer notes..."
+                    value={form.notes}
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  />
+
+                  <button
+                    type="submit"
+                    style={{ ...addLeadButton, ...(isMobile ? mobileButton : {}) }}
+                  >
+                    Add Lead
+                  </button>
+                </form>
+              </section>
+
+              <section style={board}>
+                {hasSearch && visibleLeads.length === 0 ? (
+                  <div style={noResultsState}>
+                    <p style={noResultsText}>No matching leads found</p>
+                  </div>
+                ) : (
+                  statuses.map((status) => {
+                    const statusLeads = visibleLeads.filter(
+                      (lead) => lead.status === status,
+                    );
+
+                    return (
+                      <div key={status} style={column}>
+                        <h2 style={columnTitle}>{status}</h2>
+
+                        {statusLeads.length === 0 ? (
+                          <div style={emptyColumnState}>
+                            <p style={emptyColumnText}>No leads in this status</p>
+                          </div>
+                        ) : (
+                          statusLeads.map((lead) => (
+                            <div key={lead.id} style={leadCard}>
+                              <div id={`lead-${lead.id}`} />
+                              <strong>Project {lead.project}</strong>
+
+                              <p style={leadLine}>{lead.customer}</p>
+
+                              <p style={leadLine}>
+                                <b>Phone:</b> {lead.phone}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Email:</b> {lead.email || "N/A"}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Move Type:</b> {lead.moveType || "N/A"}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Assigned:</b> {lead.assignedTo}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Last Contact:</b> {lead.lastContact || "N/A"}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Date:</b> {lead.moveDate || "TBD"}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Last Updated:</b> {formatActivityTime(lead.updatedAt)}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Priority:</b> {lead.priority}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Next:</b> {lead.nextAction}
+                              </p>
+
+                              <p style={leadNotes}>
+                                <b>Notes:</b>{" "}
+                                {expandedNotes[lead.id] || lead.notes.length <= 120
+                                  ? lead.notes
+                                  : `${lead.notes.slice(0, 120)}...`}
+                              </p>
+                              {lead.notes.length > 120 ? (
+                                <button
+                                  onClick={() => toggleLeadNotes(lead.id)}
+                                  style={{
+                                    ...activityViewButton,
+                                    ...(isMobile ? mobileButton : {}),
+                                  }}
+                                >
+                                  {expandedNotes[lead.id] ? "Show less" : "Show more"}
+                                </button>
+                              ) : null}
+
+                              <select
+                                style={input}
+                                value={lead.status}
+                                onChange={(e) => updateStatus(lead.id, e.target.value)}
+                              >
+                                {statuses.map((s) => (
+                                  <option key={s}>{s}</option>
+                                ))}
+                              </select>
+
+                              <div style={leadActions}>
+                                <button
+                                  onClick={() => archiveLead(lead.id)}
+                                  style={{
+                                    ...deleteButton,
+                                    ...(isMobile ? mobileButton : {}),
+                                  }}
+                                >
+                                  Archive
+                                </button>
+
+                                <button
+                                  onClick={() => editLead(lead.id)}
+                                  style={{
+                                    ...deleteButton,
+                                    ...(isMobile ? mobileButton : {}),
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </section>
+        </>
+      ) : activeTab === "archived" ? (
+            <section style={activitySection}>
+              <div style={activityHeaderRow}>
+                <h2 style={{ margin: 0 }}>Archived Leads ({visibleArchivedLeads.length})</h2>
+              </div>
+
+              {hasSearch && visibleArchivedLeads.length === 0 ? (
+                <div style={noResultsState}>
+                  <p style={noResultsText}>No matching archived leads found</p>
+                </div>
+              ) : visibleArchivedLeads.length > 0 ? (
+                <div style={activityList}>
+                  {visibleArchivedLeads.map((lead) => (
+                    <div key={lead.id} style={leadCard}>
+                      <div id={`lead-${lead.id}`} />
+                      <strong>Project {lead.project}</strong>
+
+                      <p style={leadLine}>{lead.customer}</p>
+
+                      <p style={leadLine}>
+                        <b>Email:</b> {lead.email || "N/A"}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Phone:</b> {lead.phone || "N/A"}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Archived At:</b> {formatActivityTime(lead.archivedAt)}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Archived By:</b> {lead.archivedBy || "unknown"}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Previous Status:</b> {lead.previousStatus || "Hot Lead"}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Last Updated:</b> {formatActivityTime(lead.updatedAt)}
+                      </p>
+
+                      <p style={leadNotes}>
+                        <b>Notes:</b> {lead.notes || "N/A"}
+                      </p>
+
+                      <div style={leadActions}>
+                        <button
+                          onClick={() => restoreLead(lead.id)}
+                          style={{
+                            ...deleteButton,
+                            ...(isMobile ? mobileButton : {}),
+                          }}
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: 0, color: "#6b7280" }}>No archived leads yet.</p>
+              )}
+            </section>
+      ) : (
+            <section style={activitySection}>
+              <div style={activityHeaderRow}>
+                <h2 style={{ margin: 0 }}>Recent Activity ({visibleActivityCount})</h2>
+                <div style={activityFilterBar}>
+                  {activityFilterButtons.map((button) => (
+                    <button
+                      key={button.value}
+                      type="button"
+                      onClick={() => setActivityFilter(button.value)}
                       style={{
-                        margin: 0,
-                        fontWeight: 700,
-                        color: getActivityMeta(item.action).color,
+                        ...activityFilterButton,
+                        ...(activityFilter === button.value ? activityFilterButtonActive : {}),
+                        ...(isMobile ? mobileButton : {}),
                       }}
                     >
-                      [{getActivityMeta(item.action).icon} {getActivityMeta(item.action).label}]
-                    </p>
-                    <p style={{ margin: "8px 0 0", fontWeight: 700 }}>
-                      Project {item.project} - {item.customer}
-                    </p>
-                    <p style={{ margin: "6px 0 0" }}>
-                      {item.userEmail.split("@")[0]} {getActivityMeta(item.action).actorText}
-                    </p>
-                    <p style={{ margin: "6px 0 0" }}>{formatActivityDetails(item)}</p>
-                    <p style={activityMetaText}>{formatActivityTime(item.createdAt)}</p>
-                    <p style={{ ...activityMetaText, marginTop: 4 }}>{item.userEmail}</p>
-                    {leads.some((lead) => lead.id === item.leadId) ? (
-                      <button
-                        onClick={() => viewLead(item.leadId)}
-                        style={{ ...activityViewButton, ...(isMobile ? mobileButton : {}) }}
-                      >
-                        View Lead
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
+                      {button.label} ({activityFilterCounts[button.value]})
+                    </button>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+              {hasActivity ? (
+                <div style={activityList}>
+                  {activityGroups.map((group) => (
+                    <div key={group.day} style={activityDayGroup}>
+                      <h3 style={activityDayTitle}>{group.day}</h3>
+                      {group.items.map((item) => (
+                        <div
+                          key={item.id}
+                          style={{
+                            ...activityItem,
+                            borderLeft: `6px solid ${getActivityMeta(item.action).color}`,
+                          }}
+                        >
+                          <p
+                            style={{
+                              margin: 0,
+                              fontWeight: 700,
+                              color: getActivityMeta(item.action).color,
+                            }}
+                          >
+                            [{getActivityMeta(item.action).icon} {getActivityMeta(item.action).label}]
+                          </p>
+                          <p style={{ margin: "8px 0 0", fontWeight: 700 }}>
+                            Project {item.project} - {item.customer}
+                          </p>
+                          <p style={{ margin: "6px 0 0" }}>
+                            {item.userEmail.split("@")[0]} {getActivityMeta(item.action).actorText}
+                          </p>
+                          <p style={{ margin: "6px 0 0" }}>{formatActivityDetails(item)}</p>
+                          <p style={activityMetaText}>{formatActivityTime(item.createdAt)}</p>
+                          <p style={{ ...activityMetaText, marginTop: 4 }}>{item.userEmail}</p>
+                          {leads.some((lead) => lead.id === item.leadId) ? (
+                            <button
+                              onClick={() => viewLead(item.leadId)}
+                              style={{ ...activityViewButton, ...(isMobile ? mobileButton : {}) }}
+                            >
+                              View Lead
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: 0, color: "#6b7280" }}>No recent activity yet.</p>
+              )}
+            </section>
+          )}
     </main>
   );
 }
@@ -1220,6 +1518,28 @@ const headerActions = {
   marginLeft: "auto",
   width: "100%",
   maxWidth: 540,
+};
+const tabBar = {
+  display: "flex",
+  gap: 8,
+  padding: 6,
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  background: "#fff",
+  width: "fit-content",
+};
+const tabButton = {
+  padding: "10px 14px",
+  borderRadius: 8,
+  border: "1px solid transparent",
+  background: "transparent",
+  color: "#374151",
+  cursor: "pointer",
+  fontWeight: 700,
+};
+const tabButtonActive = {
+  background: "#111827",
+  color: "#fff",
 };
 const statsGrid = {
   display: "grid",
@@ -1301,8 +1621,28 @@ const column = {
   borderRadius: 12,
   padding: 14,
   minWidth: 0,
+  minHeight: 280,
+  display: "flex",
+  flexDirection: "column" as const,
+  gap: 10,
 };
 const columnTitle = { fontSize: 16 };
+const emptyColumnState = {
+  minHeight: 180,
+  display: "grid",
+  placeItems: "center",
+  border: "1px dashed #d1d5db",
+  borderRadius: 10,
+  background: "#f9fafb",
+  padding: 16,
+};
+
+const emptyColumnText = {
+  margin: 0,
+  color: "#6b7280",
+  fontSize: 14,
+  textAlign: "center" as const,
+};
 const leadCard = {
   border: "1px solid #eee",
   borderRadius: 10,
@@ -1385,11 +1725,104 @@ const userEmailText = {
   color: "#4b5563",
 };
 
+const searchSection = {
+  display: "grid",
+  gap: 8,
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 16,
+  background: "#fff",
+  position: "sticky" as const,
+  top: 12,
+  zIndex: 10,
+  boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)",
+};
+
+const searchRow = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap" as const,
+  alignItems: "center",
+};
+
+const searchInput = {
+  flex: "1 1 320px",
+  minWidth: 0,
+  padding: 12,
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  boxSizing: "border-box" as const,
+};
+
+const clearSearchButton = {
+  padding: "12px 14px",
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  background: "#f9fafb",
+  color: "#374151",
+  cursor: "pointer",
+  fontWeight: 700,
+};
+
+const searchFeedbackText = {
+  margin: 0,
+  color: "#6b7280",
+  fontSize: 13,
+};
+
+const noResultsState = {
+  minHeight: 220,
+  display: "grid",
+  placeItems: "center",
+  border: "1px dashed #d1d5db",
+  borderRadius: 12,
+  background: "#fafafa",
+  padding: 16,
+  gridColumn: "1 / -1",
+};
+
+const noResultsText = {
+  margin: 0,
+  color: "#6b7280",
+  fontSize: 14,
+  textAlign: "center" as const,
+};
+
 const activitySection = {
   border: "1px solid #ddd",
   borderRadius: 12,
   padding: 18,
   background: "#fff",
+};
+
+const activityHeaderRow = {
+  display: "grid",
+  gap: 12,
+  marginBottom: 16,
+};
+
+const activityFilterBar = {
+  display: "flex",
+  flexWrap: "wrap" as const,
+  gap: 8,
+};
+
+const activityFilterButton = {
+  padding: "8px 12px",
+  borderStyle: "solid",
+  borderWidth: 1,
+  borderColor: "#d1d5db",
+  borderRadius: 999,
+  background: "#f9fafb",
+  color: "#374151",
+  cursor: "pointer",
+  fontWeight: 700,
+};
+
+const activityFilterButtonActive = {
+  background: "#111827",
+  borderColor: "#111827",
+  color: "#fff",
 };
 
 const activityList = {
