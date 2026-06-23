@@ -28,6 +28,7 @@ type Lead = {
   customer: string;
   phone: string;
   email: string;
+  followUpDate: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -137,6 +138,7 @@ function normalizeLead(lead: Partial<Lead>): Lead {
     customer: lead.customer || "",
     phone: lead.phone || "",
     email: lead.email || "",
+    followUpDate: lead.followUpDate || "",
     createdAt,
     updatedAt,
     archived: Boolean(lead.archived),
@@ -354,6 +356,11 @@ function formatActivityDetails(item: ActivityRecord): string {
       return `${match[1]} → ${match[2]}`;
     }
   }
+
+  if (item.details.includes("follow-up:")) {
+    return item.details.replace(/follow-up:\s*/gi, "Follow-Up: ");
+  }
+
   return item.details;
 }
 
@@ -384,7 +391,7 @@ function getStatusCardVisual(status: string) {
     case "Lost / Closed":
       return { bg: "#fef2f2", border: "#fca5a5" };
     default:
-      return { bg: "#fff", border: "#ddd" };
+      return { bg: "#1F2937", border: "#374151" };
   }
 }
 
@@ -405,6 +412,9 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived">("dashboard");
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false);
+  const [hasScrolled, setHasScrolled] = useState(false);
   const isMobile = useSyncExternalStore(
     subscribeToIsMobile,
     getIsMobileSnapshot,
@@ -447,6 +457,19 @@ export default function Home() {
   }, [user]);
 
   useEffect(() => {
+    const handleScroll = () => {
+      setHasScrolled(window.scrollY > 0);
+    };
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!user) return;
 
     const recentActivityQuery = query(
@@ -486,6 +509,7 @@ export default function Home() {
     customer: "",
     phone: "",
     email: "",
+    followUpDate: "",
     moveDate: "",
     moveType: "",
     status: "Hot Lead",
@@ -529,6 +553,24 @@ export default function Home() {
     });
   }, [nonArchivedLeads, normalizedSearchTerm]);
 
+  const overdueFollowUpsCount = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return nonArchivedLeads.filter((lead) => {
+      if (!lead.followUpDate) return false;
+      if (lead.status === "Booked / Confirmed" || lead.status === "Lost / Closed") {
+        return false;
+      }
+
+      const followUp = new Date(lead.followUpDate);
+      if (Number.isNaN(followUp.getTime())) return false;
+      followUp.setHours(0, 0, 0, 0);
+
+      return followUp < today;
+    }).length;
+  }, [nonArchivedLeads]);
+
   const filteredArchivedLeads = useMemo(() => {
     if (!normalizedSearchTerm) return archivedLeads;
 
@@ -543,6 +585,29 @@ export default function Home() {
   const hasSearch = normalizedSearchTerm.length > 0;
   const visibleLeads = filteredLeads;
   const visibleArchivedLeads = filteredArchivedLeads;
+  const overdueFilteredLeads = useMemo(() => {
+    if (!showOverdueOnly) return visibleLeads;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return visibleLeads.filter((lead) => {
+      if (!lead.followUpDate) return false;
+      if (lead.status === "Booked / Confirmed" || lead.status === "Lost / Closed") {
+        return false;
+      }
+
+      const followUp = new Date(lead.followUpDate);
+      if (Number.isNaN(followUp.getTime())) return false;
+      followUp.setHours(0, 0, 0, 0);
+
+      return followUp < today;
+    });
+  }, [showOverdueOnly, visibleLeads]);
+  const statusFilteredLeads = useMemo(() => {
+    if (!selectedStatus) return overdueFilteredLeads;
+    return overdueFilteredLeads.filter((lead) => lead.status === selectedStatus);
+  }, [overdueFilteredLeads, selectedStatus]);
 
   const filteredActivity = useMemo(() => {
     return recentActivity.filter(
@@ -626,6 +691,14 @@ export default function Home() {
           `email: ${existing.email || "none"} -> ${updatedLead.email || "none"}`,
         );
       }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "followUpDate") &&
+        updates.followUpDate !== existing.followUpDate
+      ) {
+        detailParts.push(
+          `follow-up: ${existing.followUpDate || "none"} -> ${updatedLead.followUpDate || "none"}`,
+        );
+      }
 
       await addActivityRecord(user.email || "unknown", {
         leadId: updatedLead.id,
@@ -667,7 +740,7 @@ export default function Home() {
         project: newLead.project,
         customer: newLead.customer,
         action: "lead_created",
-        details: `Lead created${newLead.email ? ` | email: ${newLead.email}` : ""}`,
+        details: `Lead created${newLead.email ? ` | email: ${newLead.email}` : ""}${newLead.followUpDate ? ` | follow-up: ${newLead.followUpDate}` : ""}`,
       });
     } catch (err) {
       console.error("Failed to save new lead to Firestore", err);
@@ -683,6 +756,7 @@ export default function Home() {
       nextAction: "Follow up with customer",
       phone: "",
       email: "",
+      followUpDate: "",
       moveType: "",
       assignedTo: "Curt",
       lastContact: "",
@@ -772,7 +846,18 @@ export default function Home() {
     const email = prompt("Edit email", existing.email);
     if (email === null) return;
 
-    void updateLead(id, { customer: customer.trim(), notes, email: email.trim() });
+    const followUpDate = prompt(
+      "Edit follow-up date (YYYY-MM-DD)",
+      existing.followUpDate,
+    );
+    if (followUpDate === null) return;
+
+    void updateLead(id, {
+      customer: customer.trim(),
+      notes,
+      email: email.trim(),
+      followUpDate: followUpDate.trim(),
+    });
   }
 
   function copySummary() {
@@ -1034,7 +1119,12 @@ export default function Home() {
         </div>
       </header>
 
-      <section style={searchSection}>
+      <section
+        style={{
+          ...searchSection,
+          ...(hasScrolled ? searchSectionScrolled : {}),
+        }}
+      >
         <div style={searchRow}>
           <input
             style={searchInput}
@@ -1057,6 +1147,12 @@ export default function Home() {
           <p style={searchFeedbackText}>
             Showing {activeTab === "archived" ? filteredArchivedLeads.length : filteredLeads.length} result(s) for: {searchTerm.trim()}
           </p>
+        ) : null}
+        {activeTab === "dashboard" && selectedStatus ? (
+          <p style={searchFeedbackText}>Status filter: {selectedStatus}</p>
+        ) : null}
+        {activeTab === "dashboard" && showOverdueOnly ? (
+          <p style={searchFeedbackText}>Overdue filter: On</p>
         ) : null}
       </section>
 
@@ -1088,19 +1184,63 @@ export default function Home() {
         <>
               <section style={statsGrid}>
                 {statuses.map((status) => (
-                  <div
+                  <button
                     key={status}
+                    type="button"
+                    onClick={() =>
+                      setSelectedStatus((current) => (current === status ? null : status))
+                    }
                     style={{
                       ...statCard,
                       background: getStatusCardVisual(status).bg,
                       borderColor: getStatusCardVisual(status).border,
+                      ...(selectedStatus === status ? selectedStatCard : {}),
                     }}
                   >
-                    <p style={statLabel}>{status}</p>
-                    <h2 style={statNumber}>{counts[status] || 0}</h2>
-                  </div>
+                    <p style={{ ...statLabel, color: "#334155" }}>{status}</p>
+                    <h2 style={{ ...statNumber, color: "#0F172A" }}>{counts[status] || 0}</h2>
+                  </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => setSelectedStatus(null)}
+                  style={{
+                    ...statCard,
+                    ...(selectedStatus === null ? selectedStatCard : {}),
+                    background: "#1F2937",
+                    borderColor: "#374151",
+                  }}
+                >
+                  <p style={{ ...statLabel, color: "#F9FAFB" }}>All Leads</p>
+                  <h2 style={{ ...statNumber, color: "#F9FAFB" }}>{nonArchivedLeads.length}</h2>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOverdueOnly((current) => !current)}
+                  style={{
+                    ...statCard,
+                    ...(showOverdueOnly ? selectedStatCard : {}),
+                    background: "#1F2937",
+                    borderColor: "#fdba74",
+                  }}
+                >
+                  <p style={{ ...statLabel, color: "#F9FAFB" }}>Overdue Follow-Ups</p>
+                  <h2 style={{ ...statNumber, color: "#F9FAFB" }}>{overdueFollowUpsCount}</h2>
+                </button>
               </section>
+
+              {selectedStatus || showOverdueOnly ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStatus(null);
+                    setShowOverdueOnly(false);
+                  }}
+                  style={{ ...clearSearchButton, width: "fit-content" }}
+                >
+                  Clear Filter
+                </button>
+              ) : null}
 
               <section style={formSection}>
                 <h2 style={sectionTitle}>Add Lead</h2>
@@ -1151,6 +1291,16 @@ export default function Home() {
                       type="date"
                       value={form.lastContact}
                       onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+                    />
+                  </label>
+
+                  <label style={fieldLabel}>
+                    Follow-Up Date
+                    <input
+                      style={input}
+                      type="date"
+                      value={form.followUpDate}
+                      onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
                     />
                   </label>
 
@@ -1222,15 +1372,19 @@ export default function Home() {
               </section>
 
               <section style={board}>
-                {hasSearch && visibleLeads.length === 0 ? (
+                {statusFilteredLeads.length === 0 ? (
                   <div style={noResultsState}>
-                    <p style={noResultsText}>No matching leads found</p>
+                    <p style={noResultsText}>
+                      {selectedStatus
+                        ? "No leads found for this status"
+                        : showOverdueOnly
+                          ? "No overdue follow-ups found"
+                          : "No matching leads found"}
+                    </p>
                   </div>
                 ) : (
-                  statuses.map((status) => {
-                    const statusLeads = visibleLeads.filter(
-                      (lead) => lead.status === status,
-                    );
+                  (selectedStatus ? [selectedStatus] : statuses).map((status) => {
+                    const statusLeads = statusFilteredLeads.filter((lead) => lead.status === status);
 
                     return (
                       <div key={status} style={column}>
@@ -1270,6 +1424,10 @@ export default function Home() {
 
                               <p style={leadLine}>
                                 <b>Date:</b> {lead.moveDate || "TBD"}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Follow-Up:</b> {lead.followUpDate || "N/A"}
                               </p>
 
                               <p style={leadLine}>
@@ -1404,7 +1562,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ margin: 0, color: "#6b7280" }}>No archived leads yet.</p>
+                <p style={{ margin: 0, color: "#9CA3AF" }}>No archived leads yet.</p>
               )}
             </section>
       ) : (
@@ -1473,7 +1631,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ margin: 0, color: "#6b7280" }}>No recent activity yet.</p>
+                <p style={{ margin: 0, color: "#9CA3AF" }}>No recent activity yet.</p>
               )}
             </section>
           )}
@@ -1487,9 +1645,9 @@ const page = {
   margin: "0 auto",
   padding: 16,
   boxSizing: "border-box" as const,
-  overflowX: "hidden" as const,
   fontFamily: "Arial, sans-serif",
-  background: "#f6f7f9",
+  background: "#111827",
+  color: "#F9FAFB",
   minHeight: "100vh",
   display: "grid",
   gap: 22,
@@ -1501,9 +1659,10 @@ const header = {
   gap: 16,
   flexWrap: "wrap" as const,
   padding: 16,
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 12,
-  background: "#fff",
+  background: "#1F2937",
+  boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
 };
 const headerIdentity = {
   minWidth: 240,
@@ -1523,23 +1682,24 @@ const tabBar = {
   display: "flex",
   gap: 8,
   padding: 6,
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 12,
-  background: "#fff",
+  background: "#1F2937",
   width: "fit-content",
+  boxShadow: "0 6px 18px rgba(0, 0, 0, 0.22)",
 };
 const tabButton = {
   padding: "10px 14px",
   borderRadius: 8,
   border: "1px solid transparent",
   background: "transparent",
-  color: "#374151",
+  color: "#9CA3AF",
   cursor: "pointer",
   fontWeight: 700,
 };
 const tabButtonActive = {
-  background: "#111827",
-  color: "#fff",
+  background: "#374151",
+  color: "#F9FAFB",
 };
 const statsGrid = {
   display: "grid",
@@ -1547,27 +1707,39 @@ const statsGrid = {
   gap: 14,
 };
 const statCard = {
-  background: "#fff",
-  border: "1px solid #ddd",
+  background: "#1F2937",
+  borderStyle: "solid",
+  borderWidth: 1,
+  borderColor: "#374151",
   borderRadius: 12,
   padding: 18,
   minHeight: 110,
   display: "grid",
   alignContent: "space-between",
+  textAlign: "left" as const,
+  cursor: "pointer",
+  boxShadow: "0 6px 16px rgba(0, 0, 0, 0.2)",
 };
-const statLabel = { margin: 0, color: "#555", fontSize: 14, fontWeight: 600 };
+const selectedStatCard = {
+  borderWidth: 2,
+  borderColor: "#0f766e",
+  boxShadow: "0 10px 24px rgba(15, 118, 110, 0.2)",
+  transform: "translateY(-1px)",
+};
+const statLabel = { margin: 0, color: "#9CA3AF", fontSize: 14, fontWeight: 600 };
 const statNumber = {
   margin: "12px 0 0",
   fontSize: 42,
   lineHeight: 1,
   fontWeight: 700,
-  color: "#111827",
+  color: "#F9FAFB",
 };
 const formSection = {
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 12,
   padding: 16,
-  background: "#fff",
+  background: "#1F2937",
+  boxShadow: "0 8px 20px rgba(0, 0, 0, 0.22)",
 };
 const sectionTitle = {
   marginTop: 0,
@@ -1581,8 +1753,10 @@ const formGrid = {
 const input = {
   width: "100%",
   padding: 10,
-  border: "1px solid #ccc",
+  border: "1px solid #374151",
   borderRadius: 8,
+  background: "#111827",
+  color: "#F9FAFB",
   boxSizing: "border-box" as const,
 };
 const notesInput = {
@@ -1590,8 +1764,10 @@ const notesInput = {
   width: "100%",
   minHeight: 120,
   padding: 12,
-  border: "1px solid #ccc",
+  border: "1px solid #374151",
   borderRadius: 8,
+  background: "#111827",
+  color: "#F9FAFB",
   boxSizing: "border-box" as const,
   resize: "vertical" as const,
 };
@@ -1599,8 +1775,8 @@ const primaryButton = {
   padding: "10px 14px",
   border: 0,
   borderRadius: 8,
-  background: "#111827",
-  color: "#fff",
+  background: "#374151",
+  color: "#F9FAFB",
   cursor: "pointer",
 };
 const addLeadButton = {
@@ -1616,8 +1792,8 @@ const board = {
   gap: 16,
 };
 const column = {
-  background: "#fff",
-  border: "1px solid #ddd",
+  background: "#1F2937",
+  border: "1px solid #374151",
   borderRadius: 12,
   padding: 14,
   minWidth: 0,
@@ -1625,32 +1801,34 @@ const column = {
   display: "flex",
   flexDirection: "column" as const,
   gap: 10,
+  boxShadow: "0 8px 20px rgba(0, 0, 0, 0.2)",
 };
-const columnTitle = { fontSize: 16 };
+const columnTitle = { fontSize: 16, color: "#F9FAFB" };
 const emptyColumnState = {
   minHeight: 180,
   display: "grid",
   placeItems: "center",
-  border: "1px dashed #d1d5db",
+  border: "1px dashed #374151",
   borderRadius: 10,
-  background: "#f9fafb",
+  background: "#111827",
   padding: 16,
 };
 
 const emptyColumnText = {
   margin: 0,
-  color: "#6b7280",
+  color: "#9CA3AF",
   fontSize: 14,
   textAlign: "center" as const,
 };
 const leadCard = {
-  border: "1px solid #eee",
+  border: "1px solid #374151",
   borderRadius: 10,
   padding: 10,
   marginBottom: 8,
-  background: "#fafafa",
+  background: "#111827",
   minWidth: 0,
   fontSize: 14,
+  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
 };
 const leadLine = {
   margin: "6px 0 0",
@@ -1660,9 +1838,9 @@ const leadLine = {
 const leadNotes = {
   margin: "8px 0 0",
   lineHeight: 1.35,
-  color: "#374151",
-  background: "#fff",
-  border: "1px solid #eee",
+  color: "#F9FAFB",
+  background: "#1F2937",
+  border: "1px solid #374151",
   borderRadius: 8,
   padding: 8,
   overflowWrap: "anywhere" as const,
@@ -1675,18 +1853,19 @@ const leadActions = {
 const deleteButton = {
   marginTop: 8,
   padding: 8,
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 8,
-  background: "#fff",
+  background: "#1F2937",
+  color: "#F9FAFB",
   cursor: "pointer",
 };
 
 const exportButton = {
   padding: "10px 14px",
-  border: "1px solid #111827",
+  border: "1px solid #374151",
   borderRadius: 8,
-  background: "#fff",
-  color: "#111827",
+  background: "#1F2937",
+  color: "#F9FAFB",
   cursor: "pointer",
 };
 
@@ -1695,7 +1874,7 @@ const fieldLabel = {
   gap: 6,
   fontSize: 13,
   fontWeight: 700,
-  color: "#374151",
+  color: "#9CA3AF",
 };
 
 const authCard = {
@@ -1703,8 +1882,9 @@ const authCard = {
   margin: "80px auto",
   padding: 24,
   borderRadius: 12,
-  border: "1px solid #ddd",
-  background: "#fff",
+  border: "1px solid #374151",
+  background: "#1F2937",
+  boxShadow: "0 10px 26px rgba(0, 0, 0, 0.28)",
 };
 
 const authForm = {
@@ -1722,20 +1902,26 @@ const userEmailText = {
   marginTop: 8,
   marginBottom: 0,
   fontSize: 13,
-  color: "#4b5563",
+  color: "#9CA3AF",
 };
 
 const searchSection = {
   display: "grid",
   gap: 8,
-  border: "1px solid #ddd",
+  borderStyle: "solid",
+  borderWidth: 1,
+  borderColor: "#374151",
   borderRadius: 12,
   padding: 16,
-  background: "#fff",
+  background: "#1F2937",
   position: "sticky" as const,
-  top: 12,
-  zIndex: 10,
-  boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)",
+  top: 0,
+  zIndex: 40,
+};
+
+const searchSectionScrolled = {
+  borderColor: "#4b5563",
+  boxShadow: "0 8px 20px rgba(0, 0, 0, 0.3)",
 };
 
 const searchRow = {
@@ -1749,24 +1935,26 @@ const searchInput = {
   flex: "1 1 320px",
   minWidth: 0,
   padding: 12,
-  border: "1px solid #d1d5db",
+  border: "1px solid #374151",
   borderRadius: 10,
+  background: "#111827",
+  color: "#F9FAFB",
   boxSizing: "border-box" as const,
 };
 
 const clearSearchButton = {
   padding: "12px 14px",
-  border: "1px solid #d1d5db",
+  border: "1px solid #374151",
   borderRadius: 10,
-  background: "#f9fafb",
-  color: "#374151",
+  background: "#111827",
+  color: "#F9FAFB",
   cursor: "pointer",
   fontWeight: 700,
 };
 
 const searchFeedbackText = {
   margin: 0,
-  color: "#6b7280",
+  color: "#9CA3AF",
   fontSize: 13,
 };
 
@@ -1774,25 +1962,26 @@ const noResultsState = {
   minHeight: 220,
   display: "grid",
   placeItems: "center",
-  border: "1px dashed #d1d5db",
+  border: "1px dashed #374151",
   borderRadius: 12,
-  background: "#fafafa",
+  background: "#1F2937",
   padding: 16,
   gridColumn: "1 / -1",
 };
 
 const noResultsText = {
   margin: 0,
-  color: "#6b7280",
+  color: "#9CA3AF",
   fontSize: 14,
   textAlign: "center" as const,
 };
 
 const activitySection = {
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 12,
   padding: 18,
-  background: "#fff",
+  background: "#1F2937",
+  boxShadow: "0 8px 20px rgba(0, 0, 0, 0.24)",
 };
 
 const activityHeaderRow = {
@@ -1811,18 +2000,18 @@ const activityFilterButton = {
   padding: "8px 12px",
   borderStyle: "solid",
   borderWidth: 1,
-  borderColor: "#d1d5db",
+  borderColor: "#374151",
   borderRadius: 999,
-  background: "#f9fafb",
-  color: "#374151",
+  background: "#111827",
+  color: "#F9FAFB",
   cursor: "pointer",
   fontWeight: 700,
 };
 
 const activityFilterButtonActive = {
-  background: "#111827",
-  borderColor: "#111827",
-  color: "#fff",
+  background: "#374151",
+  borderColor: "#4b5563",
+  color: "#F9FAFB",
 };
 
 const activityList = {
@@ -1832,10 +2021,11 @@ const activityList = {
 };
 
 const activityItem = {
-  border: "1px solid #eee",
+  border: "1px solid #374151",
   borderRadius: 10,
   padding: 12,
-  background: "#fafafa",
+  background: "#111827",
+  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
 };
 
 const activityDayGroup = {
@@ -1846,23 +2036,24 @@ const activityDayGroup = {
 const activityDayTitle = {
   margin: "8px 0 0",
   fontSize: 14,
-  color: "#4b5563",
+  color: "#9CA3AF",
   letterSpacing: 0.2,
   textTransform: "uppercase" as const,
 };
 
 const activityMetaText = {
   margin: "6px 0 0",
-  color: "#6b7280",
+  color: "#9CA3AF",
   fontSize: 12,
 };
 
 const activityViewButton = {
   marginTop: 10,
   padding: "8px 10px",
-  border: "1px solid #ddd",
+  border: "1px solid #374151",
   borderRadius: 8,
-  background: "#fff",
+  background: "#1F2937",
+  color: "#F9FAFB",
   cursor: "pointer",
 };
 
