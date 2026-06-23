@@ -12,7 +12,15 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { db } from "../lib/firebase";
+import {
+  browserLocalPersistence,
+  onAuthStateChanged,
+  setPersistence,
+  signInWithEmailAndPassword,
+  signOut,
+  type User,
+} from "firebase/auth";
+import { auth, db } from "../lib/firebase";
 
 type Lead = {
   id: string;
@@ -192,8 +200,28 @@ export default function Home() {
     readStoredLeads,
     getServerLeadsSnapshot,
   );
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   useEffect(() => {
+    void setPersistence(auth, browserLocalPersistence).catch((err) => {
+      console.error("Failed to set auth persistence", err);
+    });
+
+    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+      setUser(nextUser);
+      setAuthLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
     const unsubscribe = onSnapshot(
       leadsCollection,
       (snapshot) => {
@@ -211,7 +239,7 @@ export default function Home() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
   const [form, setForm] = useState({
     project: "",
@@ -245,6 +273,7 @@ export default function Home() {
     writeStoredLeads(leads.map((lead) => (lead.id === id ? updatedLead : lead)));
 
     try {
+      if (!user) return;
       await upsertLeadInFirestore(updatedLead);
     } catch (err) {
       console.error("Failed to update lead in Firestore", err);
@@ -264,6 +293,7 @@ export default function Home() {
     writeStoredLeads([newLead, ...leads]);
 
     try {
+      if (!user) return;
       await upsertLeadInFirestore(newLead);
     } catch (err) {
       console.error("Failed to save new lead to Firestore", err);
@@ -293,6 +323,7 @@ export default function Home() {
     writeStoredLeads(leads.filter((lead) => lead.id !== id));
 
     try {
+      if (!user) return;
       await deleteLeadInFirestore(id);
     } catch (err) {
       console.error("Failed to delete lead from Firestore", err);
@@ -424,6 +455,7 @@ export default function Home() {
         writeStoredLeads(normalized);
 
         try {
+          if (!user) throw new Error("Not authenticated");
           await replaceFirestoreLeads(normalized);
           alert(`Import successful — ${normalized.length} leads restored.`);
         } catch (err) {
@@ -441,6 +473,76 @@ export default function Home() {
     reader.readAsText(file);
   }
 
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError("");
+
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+      setLoginPassword("");
+    } catch (err) {
+      console.error("Login failed", err);
+      setLoginError("Login failed. Please check your email and password.");
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Logout failed", err);
+      alert("Logout failed. Please try again.");
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <main style={page}>
+        <section style={authCard}>
+          <h1 style={{ marginTop: 0 }}>ASAP Pipeline</h1>
+          <p>Checking authentication...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main style={page}>
+        <section style={authCard}>
+          <h1 style={{ marginTop: 0 }}>ASAP Pipeline Login</h1>
+          <p style={{ marginTop: 8 }}>
+            Sign in with your Firebase Email/Password account.
+          </p>
+
+          <form onSubmit={handleLogin} style={authForm}>
+            <input
+              style={input}
+              type="email"
+              placeholder="Email"
+              value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              required
+            />
+            <input
+              style={input}
+              type="password"
+              placeholder="Password"
+              value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+              required
+            />
+            <button type="submit" style={primaryButton}>
+              Login
+            </button>
+          </form>
+
+          {loginError ? <p style={authErrorText}>{loginError}</p> : null}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main style={page}>
       <header style={header}>
@@ -449,6 +551,7 @@ export default function Home() {
           <p style={{ marginTop: 8 }}>
             Simple lead tracking for moving projects.
           </p>
+          <p style={userEmailText}>Signed in as: {user.email}</p>
         </div>
 
         <button onClick={copySummary} style={primaryButton}>
@@ -459,6 +562,9 @@ export default function Home() {
         </button>
         <button onClick={handleImportClick} style={{ ...exportButton, marginLeft: 8 }}>
           Import Backup
+        </button>
+        <button onClick={handleLogout} style={{ ...deleteButton, marginLeft: 8 }}>
+          Logout
         </button>
         <input
           ref={fileInputRef}
@@ -752,4 +858,31 @@ const fieldLabel = {
   fontSize: 13,
   fontWeight: 700,
   color: "#374151",
+};
+
+const authCard = {
+  maxWidth: 420,
+  margin: "80px auto",
+  padding: 24,
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  background: "#fff",
+};
+
+const authForm = {
+  display: "grid",
+  gap: 10,
+  marginTop: 16,
+};
+
+const authErrorText = {
+  color: "#b91c1c",
+  marginTop: 12,
+};
+
+const userEmailText = {
+  marginTop: 8,
+  marginBottom: 0,
+  fontSize: 13,
+  color: "#4b5563",
 };
