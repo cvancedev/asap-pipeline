@@ -11,3 +11,14 @@ textarea,
 button {
   font: inherit;
 }
+
+.custom-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .custom-date-input::-webkit-calendar-picker-indicator {
+    opacity: 0;
+  }
+}

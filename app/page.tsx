@@ -397,6 +397,9 @@ function getStatusCardVisual(status: string) {
 
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const moveDateInputRef = useRef<HTMLInputElement | null>(null);
+  const lastContactInputRef = useRef<HTMLInputElement | null>(null);
+  const followUpDateInputRef = useRef<HTMLInputElement | null>(null);
   const leads = useSyncExternalStore(
     subscribeToLeads,
     readStoredLeads,
@@ -1028,6 +1031,21 @@ export default function Home() {
     setExpandedNotes((prev) => ({ ...prev, [leadId]: !prev[leadId] }));
   }
 
+  function openDatePicker(input: HTMLInputElement | null) {
+    if (!input) return;
+
+    try {
+      if (typeof input.showPicker === "function") {
+        input.showPicker();
+        return;
+      }
+    } catch {
+      // Some browsers require user gesture and can throw when showPicker is blocked.
+    }
+
+    input.focus();
+  }
+
   if (authLoading) {
     return (
       <main style={page}>
@@ -1276,32 +1294,77 @@ export default function Home() {
 
                   <label style={fieldLabel}>
                     Move Date
-                    <input
-                      style={input}
-                      type="date"
-                      value={form.moveDate}
-                      onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
-                    />
+                    <div
+                      style={dateInputWrapper}
+                      onClick={() => openDatePicker(moveDateInputRef.current)}
+                    >
+                      <input
+                        ref={moveDateInputRef}
+                        style={{ ...input, ...dateInputField }}
+                        className="custom-date-input"
+                        type="date"
+                        value={form.moveDate}
+                        onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        style={datePickerButton}
+                        aria-label="Open move date picker"
+                        onClick={() => openDatePicker(moveDateInputRef.current)}
+                      >
+                        📅
+                      </button>
+                    </div>
                   </label>
 
                   <label style={fieldLabel}>
                     Last Contact
-                    <input
-                      style={input}
-                      type="date"
-                      value={form.lastContact}
-                      onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
-                    />
+                    <div
+                      style={dateInputWrapper}
+                      onClick={() => openDatePicker(lastContactInputRef.current)}
+                    >
+                      <input
+                        ref={lastContactInputRef}
+                        style={{ ...input, ...dateInputField }}
+                        className="custom-date-input"
+                        type="date"
+                        value={form.lastContact}
+                        onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        style={datePickerButton}
+                        aria-label="Open last contact date picker"
+                        onClick={() => openDatePicker(lastContactInputRef.current)}
+                      >
+                        📅
+                      </button>
+                    </div>
                   </label>
 
                   <label style={fieldLabel}>
                     Follow-Up Date
-                    <input
-                      style={input}
-                      type="date"
-                      value={form.followUpDate}
-                      onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
-                    />
+                    <div
+                      style={dateInputWrapper}
+                      onClick={() => openDatePicker(followUpDateInputRef.current)}
+                    >
+                      <input
+                        ref={followUpDateInputRef}
+                        style={{ ...input, ...dateInputField }}
+                        className="custom-date-input"
+                        type="date"
+                        value={form.followUpDate}
+                        onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        style={datePickerButton}
+                        aria-label="Open follow-up date picker"
+                        onClick={() => openDatePicker(followUpDateInputRef.current)}
+                      >
+                        📅
+                      </button>
+                    </div>
                   </label>
 
                   <select
@@ -1758,6 +1821,30 @@ const input = {
   background: "#111827",
   color: "#F9FAFB",
   boxSizing: "border-box" as const,
+};
+const dateInputWrapper = {
+  position: "relative" as const,
+  width: "100%",
+};
+const dateInputField = {
+  paddingRight: 42,
+};
+const datePickerButton = {
+  position: "absolute" as const,
+  right: 6,
+  top: "50%",
+  transform: "translateY(-50%)",
+  border: "1px solid #4B5563",
+  borderRadius: 6,
+  background: "#1F2937",
+  color: "#F9FAFB",
+  width: 28,
+  height: 28,
+  display: "grid",
+  placeItems: "center",
+  cursor: "pointer",
+  lineHeight: 1,
+  padding: 0,
 };
 const notesInput = {
   gridColumn: "1 / -1",
