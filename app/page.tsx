@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
+  addDoc,
   collection,
   doc,
   limit,
@@ -9,7 +10,9 @@ import {
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
   setDoc,
+  Timestamp,
   writeBatch,
 } from "firebase/firestore";
 import {
@@ -61,6 +64,14 @@ type ActivityMeta = {
   icon: string;
   color: string;
   actorText: string;
+};
+
+type TeamMessage = {
+  id: string;
+  text: string;
+  userEmail: string;
+  userName: string;
+  createdAt: Timestamp | null;
 };
 
 type ActivityFilter =
@@ -120,6 +131,7 @@ const LEADS_STORE_EVENT = "asap-pipeline-updated";
 const EMPTY_LEADS: Lead[] = [];
 const leadsCollection = collection(db, "leads");
 const activityCollection = collection(db, "activity");
+const teamMessagesCollection = collection(db, "teamMessages");
 
 let cachedLeadsRaw: string | null = null;
 let cachedLeadsSnapshot: Lead[] = EMPTY_LEADS;
@@ -400,6 +412,7 @@ export default function Home() {
   const moveDateInputRef = useRef<HTMLInputElement | null>(null);
   const lastContactInputRef = useRef<HTMLInputElement | null>(null);
   const followUpDateInputRef = useRef<HTMLInputElement | null>(null);
+  const chatListRef = useRef<HTMLDivElement | null>(null);
   const leads = useSyncExternalStore(
     subscribeToLeads,
     readStoredLeads,
@@ -411,8 +424,11 @@ export default function Home() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [recentActivity, setRecentActivity] = useState<ActivityRecord[]>([]);
+  const [teamMessages, setTeamMessages] = useState<TeamMessage[]>([]);
+  const [teamMessageInput, setTeamMessageInput] = useState("");
+  const [isSendingTeamMessage, setIsSendingTeamMessage] = useState(false);
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived" | "team-chat">("dashboard");
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
@@ -458,6 +474,46 @@ export default function Home() {
 
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const teamChatQuery = query(
+      teamMessagesCollection,
+      orderBy("createdAt", "asc"),
+      limit(300),
+    );
+
+    const unsubscribe = onSnapshot(
+      teamChatQuery,
+      (snapshot) => {
+        const items = snapshot.docs.map((docSnapshot) => {
+          const data = docSnapshot.data() as Partial<TeamMessage>;
+          return {
+            id: docSnapshot.id,
+            text: data.text || "",
+            userEmail: data.userEmail || "unknown",
+            userName: data.userName || "",
+            createdAt: data.createdAt || null,
+          } satisfies TeamMessage;
+        });
+
+        setTeamMessages(items);
+      },
+      (err) => {
+        console.error("Failed to subscribe to team chat", err);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (activeTab !== "team-chat") return;
+    const list = chatListRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
+  }, [activeTab, teamMessages]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -1046,6 +1102,47 @@ export default function Home() {
     input.focus();
   }
 
+  function formatTeamMessageTime(createdAt: TeamMessage["createdAt"]): string {
+    if (!createdAt) return "Sending...";
+    return createdAt.toDate().toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }
+
+  async function sendTeamMessage() {
+    if (!user) return;
+
+    const text = teamMessageInput.trim();
+    if (!text) return;
+
+    setIsSendingTeamMessage(true);
+    try {
+      await addDoc(teamMessagesCollection, {
+        text,
+        userEmail: user.email || "unknown",
+        userName: user.displayName || "",
+        createdAt: serverTimestamp(),
+      });
+      setTeamMessageInput("");
+    } catch (err) {
+      console.error("Failed to send team message", err);
+      alert("Message failed to send. Please try again.");
+    } finally {
+      setIsSendingTeamMessage(false);
+    }
+  }
+
+  function handleTeamMessageKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    void sendTeamMessage();
+  }
+
   if (authLoading) {
     return (
       <main style={page}>
@@ -1195,6 +1292,13 @@ export default function Home() {
           style={{ ...tabButton, ...(activeTab === "archived" ? tabButtonActive : {}) }}
         >
           Archived ({archivedLeads.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("team-chat")}
+          style={{ ...tabButton, ...(activeTab === "team-chat" ? tabButtonActive : {}) }}
+        >
+          Team Chat
         </button>
       </section>
 
@@ -1627,6 +1731,57 @@ export default function Home() {
               ) : (
                 <p style={{ margin: 0, color: "#9CA3AF" }}>No archived leads yet.</p>
               )}
+            </section>
+      ) : activeTab === "team-chat" ? (
+            <section style={activitySection}>
+              <div style={activityHeaderRow}>
+                <h2 style={{ margin: 0 }}>Team Chat</h2>
+                <p style={searchFeedbackText}>
+                  Messages update in real time. Press Enter to send, Shift+Enter for a new line.
+                </p>
+              </div>
+
+              <div ref={chatListRef} style={teamChatList}>
+                {teamMessages.length > 0 ? (
+                  teamMessages.map((message) => {
+                    const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
+                    return (
+                      <div key={message.id} style={teamChatMessageItem}>
+                        <p style={teamChatSenderLine}>
+                          <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
+                        </p>
+                        <p style={teamChatMessageText}>{message.text}</p>
+                        <p style={activityMetaText}>{formatTeamMessageTime(message.createdAt)}</p>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p style={{ margin: 0, color: "#9CA3AF" }}>No messages yet. Start the conversation.</p>
+                )}
+              </div>
+
+              <div style={teamChatComposer}>
+                <textarea
+                  style={teamChatInput}
+                  placeholder="Type a team message..."
+                  value={teamMessageInput}
+                  onChange={(e) => setTeamMessageInput(e.target.value)}
+                  onKeyDown={handleTeamMessageKeyDown}
+                />
+                <button
+                  type="button"
+                  onClick={() => void sendTeamMessage()}
+                  disabled={isSendingTeamMessage || teamMessageInput.trim().length === 0}
+                  style={{
+                    ...primaryButton,
+                    ...(isSendingTeamMessage || teamMessageInput.trim().length === 0
+                      ? disabledButton
+                      : {}),
+                  }}
+                >
+                  Send
+                </button>
+              </div>
             </section>
       ) : (
             <section style={activitySection}>
@@ -2142,6 +2297,57 @@ const activityViewButton = {
   background: "#1F2937",
   color: "#F9FAFB",
   cursor: "pointer",
+};
+
+const teamChatList = {
+  display: "grid",
+  gap: 10,
+  maxHeight: 420,
+  overflowY: "auto" as const,
+  paddingRight: 4,
+};
+
+const teamChatMessageItem = {
+  border: "1px solid #374151",
+  borderRadius: 10,
+  padding: 12,
+  background: "#111827",
+  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
+};
+
+const teamChatSenderLine = {
+  margin: 0,
+  color: "#F9FAFB",
+};
+
+const teamChatMessageText = {
+  margin: "8px 0 0",
+  whiteSpace: "pre-wrap" as const,
+  overflowWrap: "anywhere" as const,
+  lineHeight: 1.4,
+};
+
+const teamChatComposer = {
+  display: "grid",
+  gap: 10,
+  marginTop: 14,
+};
+
+const teamChatInput = {
+  width: "100%",
+  minHeight: 90,
+  padding: 12,
+  border: "1px solid #374151",
+  borderRadius: 10,
+  background: "#111827",
+  color: "#F9FAFB",
+  boxSizing: "border-box" as const,
+  resize: "vertical" as const,
+};
+
+const disabledButton = {
+  opacity: 0.6,
+  cursor: "not-allowed",
 };
 
 const mobileButton = {
