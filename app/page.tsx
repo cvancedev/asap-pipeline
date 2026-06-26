@@ -72,6 +72,16 @@ type TeamMessage = {
   userEmail: string;
   userName: string;
   createdAt: Timestamp | null;
+  pinned: boolean;
+  reactionByUser: Record<string, TeamReactionEmoji>;
+};
+
+type TeamReactionEmoji = "👍" | "✅" | "👀";
+
+type TeamMessageToast = {
+  messageId: string;
+  sender: string;
+  preview: string;
 };
 
 type ActivityFilter =
@@ -126,6 +136,7 @@ const moveTypes = [
 ];
 
 const assignedUsers = ["Curt", "Jacob", "Ava"];
+const teamReactionOptions: TeamReactionEmoji[] = ["👍", "✅", "👀"];
 
 const LEADS_STORAGE_KEY = "asap-pipeline";
 const LEADS_STORE_EVENT = "asap-pipeline-updated";
@@ -420,6 +431,33 @@ function getNewestTeamMessageAtMs(messages: TeamMessage[]): number {
   }, 0);
 }
 
+function sanitizeReactionByUser(input: unknown): Record<string, TeamReactionEmoji> {
+  if (!input || typeof input !== "object") return {};
+
+  const reactionByUser: Record<string, TeamReactionEmoji> = {};
+  Object.entries(input as Record<string, unknown>).forEach(([email, reaction]) => {
+    if (reaction === "👍" || reaction === "✅" || reaction === "👀") {
+      reactionByUser[email] = reaction;
+    }
+  });
+
+  return reactionByUser;
+}
+
+function getTeamReactionCount(
+  reactionByUser: Record<string, TeamReactionEmoji>,
+  emoji: TeamReactionEmoji,
+): number {
+  return Object.values(reactionByUser).filter((reaction) => reaction === emoji).length;
+}
+
+function getTeamMessagePreview(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (!singleLine) return "(no text)";
+  if (singleLine.length <= 90) return singleLine;
+  return `${singleLine.slice(0, 90)}...`;
+}
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const moveDateInputRef = useRef<HTMLInputElement | null>(null);
@@ -429,6 +467,8 @@ export default function Home() {
   const teamMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasInitializedTeamChatReadRef = useRef(false);
   const teamChatLastReadAtMsRef = useRef(0);
+  const hasInitializedTeamChatToastRef = useRef(false);
+  const knownTeamMessageIdsRef = useRef(new Set<string>());
   const leads = useSyncExternalStore(
     subscribeToLeads,
     readStoredLeads,
@@ -444,6 +484,7 @@ export default function Home() {
   const [teamMessageInput, setTeamMessageInput] = useState("");
   const [isSendingTeamMessage, setIsSendingTeamMessage] = useState(false);
   const [teamChatUnreadCount, setTeamChatUnreadCount] = useState(0);
+  const [teamChatToast, setTeamChatToast] = useState<TeamMessageToast | null>(null);
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived" | "team-chat">("dashboard");
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
@@ -550,6 +591,8 @@ export default function Home() {
             userEmail: data.userEmail || "unknown",
             userName: data.userName || "",
             createdAt: data.createdAt || null,
+            pinned: Boolean(data.pinned),
+            reactionByUser: sanitizeReactionByUser(data.reactionByUser),
           } satisfies TeamMessage;
         });
 
@@ -576,6 +619,28 @@ export default function Home() {
         }).length;
 
         setTeamChatUnreadCount(unreadCount);
+
+        if (!hasInitializedTeamChatToastRef.current) {
+          hasInitializedTeamChatToastRef.current = true;
+          knownTeamMessageIdsRef.current = new Set(items.map((message) => message.id));
+          return;
+        }
+
+        const newestExternalMessage = items.find(
+          (message) => !knownTeamMessageIdsRef.current.has(message.id) && message.userEmail !== user.email,
+        );
+
+        knownTeamMessageIdsRef.current = new Set(items.map((message) => message.id));
+
+        if (!newestExternalMessage) return;
+
+        const sender =
+          newestExternalMessage.userName || newestExternalMessage.userEmail.split("@")[0] || "unknown";
+        setTeamChatToast({
+          messageId: newestExternalMessage.id,
+          sender,
+          preview: getTeamMessagePreview(newestExternalMessage.text),
+        });
       },
       (err) => {
         console.error("Failed to subscribe to team chat", err);
@@ -596,6 +661,18 @@ export default function Home() {
     if (activeTab !== "team-chat") return;
     teamMessageInputRef.current?.focus();
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!teamChatToast) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setTeamChatToast((current) => (current?.messageId === teamChatToast.messageId ? null : current));
+    }, 6000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [teamChatToast]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -1228,8 +1305,52 @@ export default function Home() {
   function openTeamChatTab() {
     teamChatLastReadAtMsRef.current = getNewestTeamMessageAtMs(teamMessages);
     setTeamChatUnreadCount(0);
+    setTeamChatToast(null);
     setActiveTab("team-chat");
   }
+
+  async function toggleTeamMessagePinned(message: TeamMessage) {
+    try {
+      await setDoc(
+        doc(teamMessagesCollection, message.id),
+        { pinned: !message.pinned },
+        { merge: true },
+      );
+    } catch (err) {
+      console.error("Failed to update pinned message", err);
+      alert("Could not update pin. Please try again.");
+    }
+  }
+
+  async function setTeamMessageReaction(message: TeamMessage, emoji: TeamReactionEmoji) {
+    if (!user?.email) return;
+
+    const nextReactionByUser: Record<string, TeamReactionEmoji> = {
+      ...message.reactionByUser,
+    };
+
+    if (nextReactionByUser[user.email] === emoji) {
+      delete nextReactionByUser[user.email];
+    } else {
+      nextReactionByUser[user.email] = emoji;
+    }
+
+    try {
+      await setDoc(
+        doc(teamMessagesCollection, message.id),
+        { reactionByUser: nextReactionByUser },
+        { merge: true },
+      );
+    } catch (err) {
+      console.error("Failed to update message reaction", err);
+      alert("Could not update reaction. Please try again.");
+    }
+  }
+
+  const pinnedTeamMessages = useMemo(
+    () => teamMessages.filter((message) => message.pinned),
+    [teamMessages],
+  );
 
   if (authLoading) {
     return (
@@ -1853,17 +1974,77 @@ export default function Home() {
                 </button>
               </div>
 
+              {pinnedTeamMessages.length > 0 ? (
+                <div style={teamPinnedSection}>
+                  <p style={teamPinnedTitle}>Pinned Messages</p>
+                  <div style={teamPinnedList}>
+                    {pinnedTeamMessages.map((message) => {
+                      const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
+                      return (
+                        <div key={`pinned-${message.id}`} style={teamPinnedItem}>
+                          <p style={teamPinnedText}>
+                            <strong>{sender}:</strong> {getTeamMessagePreview(message.text)}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void toggleTeamMessagePinned(message)}
+                            style={teamPinButton}
+                            aria-label="Unpin message"
+                          >
+                            📌
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               <div ref={chatListRef} style={teamChatList}>
                 {teamMessages.length > 0 ? (
                   teamMessages.map((message) => {
                     const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
                     return (
                       <div key={message.id} style={teamChatMessageItem}>
-                        <p style={teamChatSenderLine}>
-                          <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
-                        </p>
+                        <div style={teamChatMessageHeader}>
+                          <p style={teamChatSenderLine}>
+                            <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void toggleTeamMessagePinned(message)}
+                            style={teamPinButton}
+                            aria-label={message.pinned ? "Unpin message" : "Pin message"}
+                            title={message.pinned ? "Unpin message" : "Pin message"}
+                          >
+                            {message.pinned ? "📌" : "📍"}
+                          </button>
+                        </div>
                         <p style={teamChatMessageText}>{message.text}</p>
                         <p style={activityMetaText}>{formatTeamMessageTime(message.createdAt)}</p>
+                        <div style={teamReactionBar}>
+                          {teamReactionOptions.map((emoji) => {
+                            const count = getTeamReactionCount(message.reactionByUser, emoji);
+                            const isSelectedByCurrentUser =
+                              Boolean(user?.email) && message.reactionByUser[user.email || ""] === emoji;
+
+                            return (
+                              <button
+                                key={`${message.id}-${emoji}`}
+                                type="button"
+                                onClick={() => void setTeamMessageReaction(message, emoji)}
+                                style={{
+                                  ...teamReactionButton,
+                                  ...(isSelectedByCurrentUser ? teamReactionButtonActive : {}),
+                                }}
+                                aria-label={`React ${emoji}`}
+                              >
+                                <span>{emoji}</span>
+                                <span>{count}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     );
                   })
@@ -1942,6 +2123,18 @@ export default function Home() {
               )}
             </section>
           )}
+
+      {teamChatToast ? (
+        <button
+          type="button"
+          onClick={openTeamChatTab}
+          style={teamToast}
+        >
+          <p style={teamToastTitle}>New Team Message</p>
+          <p style={teamToastBody}>From: {teamChatToast.sender}</p>
+          <p style={teamToastPreview}>{teamChatToast.preview}</p>
+        </button>
+      ) : null}
     </main>
   );
 }
@@ -2409,11 +2602,127 @@ const teamChatSenderLine = {
   color: "#F9FAFB",
 };
 
+const teamChatMessageHeader = {
+  display: "flex",
+  gap: 8,
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+};
+
 const teamChatMessageText = {
   margin: "8px 0 0",
   whiteSpace: "pre-wrap" as const,
   overflowWrap: "anywhere" as const,
   lineHeight: 1.4,
+};
+
+const teamPinButton = {
+  border: "1px solid #374151",
+  borderRadius: 8,
+  background: "#1F2937",
+  color: "#F9FAFB",
+  cursor: "pointer",
+  padding: "4px 8px",
+  lineHeight: 1,
+  fontSize: 13,
+};
+
+const teamPinnedSection = {
+  border: "1px solid #374151",
+  borderRadius: 10,
+  padding: 10,
+  marginBottom: 12,
+  background: "#111827",
+};
+
+const teamPinnedTitle = {
+  margin: 0,
+  color: "#9CA3AF",
+  fontSize: 12,
+  textTransform: "uppercase" as const,
+  letterSpacing: 0.4,
+};
+
+const teamPinnedList = {
+  display: "grid",
+  gap: 8,
+  marginTop: 8,
+};
+
+const teamPinnedItem = {
+  display: "flex",
+  gap: 8,
+  alignItems: "center",
+  justifyContent: "space-between",
+  border: "1px solid #374151",
+  borderRadius: 8,
+  padding: "6px 8px",
+  background: "#1F2937",
+};
+
+const teamPinnedText = {
+  margin: 0,
+  color: "#F9FAFB",
+  fontSize: 13,
+  overflowWrap: "anywhere" as const,
+};
+
+const teamReactionBar = {
+  display: "flex",
+  gap: 6,
+  flexWrap: "wrap" as const,
+  marginTop: 8,
+};
+
+const teamReactionButton = {
+  border: "1px solid #374151",
+  borderRadius: 999,
+  background: "#1F2937",
+  color: "#F9FAFB",
+  cursor: "pointer",
+  padding: "4px 8px",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 13,
+};
+
+const teamReactionButtonActive = {
+  borderColor: "#4b5563",
+  background: "#374151",
+};
+
+const teamToast = {
+  position: "fixed" as const,
+  right: 16,
+  bottom: 16,
+  width: "min(340px, calc(100% - 32px))",
+  border: "1px solid #4b5563",
+  borderRadius: 10,
+  background: "#111827",
+  color: "#F9FAFB",
+  textAlign: "left" as const,
+  padding: 12,
+  boxShadow: "0 12px 30px rgba(0, 0, 0, 0.35)",
+  cursor: "pointer",
+  zIndex: 60,
+};
+
+const teamToastTitle = {
+  margin: 0,
+  fontWeight: 700,
+};
+
+const teamToastBody = {
+  margin: "6px 0 0",
+  color: "#9CA3AF",
+  fontSize: 12,
+};
+
+const teamToastPreview = {
+  margin: "6px 0 0",
+  fontSize: 13,
+  overflowWrap: "anywhere" as const,
 };
 
 const teamChatComposer = {
