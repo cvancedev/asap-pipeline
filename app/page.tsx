@@ -98,7 +98,8 @@ const statuses = [
   "Hot Lead",
   "Waiting on Jacob",
   "Waiting on Customer",
-  "Waiting on ASAP",
+  "Waiting on Curt",
+  "Waiting on Ava",
   "Booked / Confirmed",
   "Lost / Closed",
 ];
@@ -124,7 +125,7 @@ const moveTypes = [
   "Storage Move",
 ];
 
-const assignedUsers = ["Curt", "Jacob"];
+const assignedUsers = ["Curt", "Jacob", "Ava"];
 
 const LEADS_STORAGE_KEY = "asap-pipeline";
 const LEADS_STORE_EVENT = "asap-pipeline-updated";
@@ -143,6 +144,9 @@ function getCurrentTimestamp(): string {
 function normalizeLead(lead: Partial<Lead>): Lead {
   const createdAt = lead.createdAt || getCurrentTimestamp();
   const updatedAt = lead.updatedAt || lead.createdAt || getCurrentTimestamp();
+  const normalizedStatus = lead.status === "Waiting on ASAP" ? "Waiting on Curt" : lead.status;
+  const normalizedPreviousStatus =
+    lead.previousStatus === "Waiting on ASAP" ? "Waiting on Curt" : lead.previousStatus;
 
   return {
     id: lead.id || crypto.randomUUID(),
@@ -156,10 +160,10 @@ function normalizeLead(lead: Partial<Lead>): Lead {
     archived: Boolean(lead.archived),
     archivedAt: lead.archivedAt || "",
     archivedBy: lead.archivedBy || "",
-    previousStatus: lead.previousStatus || "",
+    previousStatus: normalizedPreviousStatus || "",
     moveDate: lead.moveDate || "",
     moveType: lead.moveType || "",
-    status: lead.status || "Hot Lead",
+    status: normalizedStatus || "Hot Lead",
     priority: lead.priority || "High",
     assignedTo: lead.assignedTo || "Curt",
     lastContact: lead.lastContact || "",
@@ -396,8 +400,10 @@ function getStatusCardVisual(status: string) {
       return { bg: "#eff6ff", border: "#93c5fd" };
     case "Waiting on Customer":
       return { bg: "#fefce8", border: "#fde047" };
-    case "Waiting on ASAP":
-      return { bg: "#eef2ff", border: "#a5b4fc" };
+    case "Waiting on Curt":
+      return { bg: "#dbeafe", border: "#60a5fa" };
+    case "Waiting on Ava":
+      return { bg: "#f3e8ff", border: "#c084fc" };
     case "Booked / Confirmed":
       return { bg: "#ecfdf3", border: "#86efac" };
     case "Lost / Closed":
@@ -407,12 +413,22 @@ function getStatusCardVisual(status: string) {
   }
 }
 
+function getNewestTeamMessageAtMs(messages: TeamMessage[]): number {
+  return messages.reduce((latest, message) => {
+    const createdAtMs = message.createdAt?.toMillis() || 0;
+    return createdAtMs > latest ? createdAtMs : latest;
+  }, 0);
+}
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const moveDateInputRef = useRef<HTMLInputElement | null>(null);
   const lastContactInputRef = useRef<HTMLInputElement | null>(null);
   const followUpDateInputRef = useRef<HTMLInputElement | null>(null);
   const chatListRef = useRef<HTMLDivElement | null>(null);
+  const teamMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasInitializedTeamChatReadRef = useRef(false);
+  const teamChatLastReadAtMsRef = useRef(0);
   const leads = useSyncExternalStore(
     subscribeToLeads,
     readStoredLeads,
@@ -427,6 +443,7 @@ export default function Home() {
   const [teamMessages, setTeamMessages] = useState<TeamMessage[]>([]);
   const [teamMessageInput, setTeamMessageInput] = useState("");
   const [isSendingTeamMessage, setIsSendingTeamMessage] = useState(false);
+  const [teamChatUnreadCount, setTeamChatUnreadCount] = useState(0);
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<"dashboard" | "activity" | "archived" | "team-chat">("dashboard");
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
@@ -478,9 +495,47 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
 
+    const leadsNeedingMigration = leads.filter(
+      (lead) => lead.status === "Waiting on ASAP" || lead.previousStatus === "Waiting on ASAP",
+    );
+    if (leadsNeedingMigration.length === 0) return;
+
+    const migratedLeads = leads.map((lead) => {
+      const nextStatus = lead.status === "Waiting on ASAP" ? "Waiting on Curt" : lead.status;
+      const nextPreviousStatus =
+        lead.previousStatus === "Waiting on ASAP" ? "Waiting on Curt" : lead.previousStatus;
+
+      if (nextStatus === lead.status && nextPreviousStatus === lead.previousStatus) {
+        return lead;
+      }
+
+      return normalizeLead({
+        ...lead,
+        status: nextStatus,
+        previousStatus: nextPreviousStatus,
+        updatedAt: getCurrentTimestamp(),
+      });
+    });
+
+    writeStoredLeads(migratedLeads);
+
+    void Promise.all(
+      migratedLeads
+        .filter((lead) =>
+          leadsNeedingMigration.some((oldLead) => oldLead.id === lead.id),
+        )
+        .map((lead) => upsertLeadInFirestore(lead)),
+    ).catch((err) => {
+      console.error("Failed to migrate Waiting on ASAP leads", err);
+    });
+  }, [leads, user]);
+
+  useEffect(() => {
+    if (!user) return;
+
     const teamChatQuery = query(
       teamMessagesCollection,
-      orderBy("createdAt", "asc"),
+      orderBy("createdAt", "desc"),
       limit(300),
     );
 
@@ -499,6 +554,28 @@ export default function Home() {
         });
 
         setTeamMessages(items);
+
+        const newestMessageAtMs = getNewestTeamMessageAtMs(items);
+
+        if (!hasInitializedTeamChatReadRef.current) {
+          hasInitializedTeamChatReadRef.current = true;
+          teamChatLastReadAtMsRef.current = newestMessageAtMs;
+          setTeamChatUnreadCount(0);
+          return;
+        }
+
+        if (activeTab === "team-chat") {
+          teamChatLastReadAtMsRef.current = newestMessageAtMs;
+          setTeamChatUnreadCount(0);
+          return;
+        }
+
+        const unreadCount = items.filter((message) => {
+          const createdAtMs = message.createdAt?.toMillis() || 0;
+          return message.userEmail !== user.email && createdAtMs > teamChatLastReadAtMsRef.current;
+        }).length;
+
+        setTeamChatUnreadCount(unreadCount);
       },
       (err) => {
         console.error("Failed to subscribe to team chat", err);
@@ -506,14 +583,19 @@ export default function Home() {
     );
 
     return () => unsubscribe();
-  }, [user]);
+  }, [activeTab, user]);
 
   useEffect(() => {
     if (activeTab !== "team-chat") return;
     const list = chatListRef.current;
     if (!list) return;
-    list.scrollTop = list.scrollHeight;
+    list.scrollTop = 0;
   }, [activeTab, teamMessages]);
+
+  useEffect(() => {
+    if (activeTab !== "team-chat") return;
+    teamMessageInputRef.current?.focus();
+  }, [activeTab]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -1143,6 +1225,12 @@ export default function Home() {
     void sendTeamMessage();
   }
 
+  function openTeamChatTab() {
+    teamChatLastReadAtMsRef.current = getNewestTeamMessageAtMs(teamMessages);
+    setTeamChatUnreadCount(0);
+    setActiveTab("team-chat");
+  }
+
   if (authLoading) {
     return (
       <main style={page}>
@@ -1295,10 +1383,10 @@ export default function Home() {
         </button>
         <button
           type="button"
-          onClick={() => setActiveTab("team-chat")}
+          onClick={openTeamChatTab}
           style={{ ...tabButton, ...(activeTab === "team-chat" ? tabButtonActive : {}) }}
         >
-          Team Chat
+          Team Chat{teamChatUnreadCount > 0 ? ` (${teamChatUnreadCount})` : ""}
         </button>
       </section>
 
@@ -1741,27 +1829,9 @@ export default function Home() {
                 </p>
               </div>
 
-              <div ref={chatListRef} style={teamChatList}>
-                {teamMessages.length > 0 ? (
-                  teamMessages.map((message) => {
-                    const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
-                    return (
-                      <div key={message.id} style={teamChatMessageItem}>
-                        <p style={teamChatSenderLine}>
-                          <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
-                        </p>
-                        <p style={teamChatMessageText}>{message.text}</p>
-                        <p style={activityMetaText}>{formatTeamMessageTime(message.createdAt)}</p>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p style={{ margin: 0, color: "#9CA3AF" }}>No messages yet. Start the conversation.</p>
-                )}
-              </div>
-
               <div style={teamChatComposer}>
                 <textarea
+                  ref={teamMessageInputRef}
                   style={teamChatInput}
                   placeholder="Type a team message..."
                   value={teamMessageInput}
@@ -1781,6 +1851,25 @@ export default function Home() {
                 >
                   Send
                 </button>
+              </div>
+
+              <div ref={chatListRef} style={teamChatList}>
+                {teamMessages.length > 0 ? (
+                  teamMessages.map((message) => {
+                    const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
+                    return (
+                      <div key={message.id} style={teamChatMessageItem}>
+                        <p style={teamChatSenderLine}>
+                          <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
+                        </p>
+                        <p style={teamChatMessageText}>{message.text}</p>
+                        <p style={activityMetaText}>{formatTeamMessageTime(message.createdAt)}</p>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p style={{ margin: 0, color: "#9CA3AF" }}>No messages yet. Start the conversation.</p>
+                )}
               </div>
             </section>
       ) : (
