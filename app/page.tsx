@@ -460,6 +460,7 @@ function getTeamMessagePreview(text: string): string {
 
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const leadFormSectionRef = useRef<HTMLElement | null>(null);
   const moveDateInputRef = useRef<HTMLInputElement | null>(null);
   const lastContactInputRef = useRef<HTMLInputElement | null>(null);
   const followUpDateInputRef = useRef<HTMLInputElement | null>(null);
@@ -722,7 +723,7 @@ export default function Home() {
     return () => unsubscribe();
   }, [user]);
 
-  const [form, setForm] = useState({
+  const createInitialForm = () => ({
     project: "",
     customer: "",
     phone: "",
@@ -737,6 +738,9 @@ export default function Home() {
     lastContact: "",
     notes: "",
   });
+
+  const [form, setForm] = useState(createInitialForm);
+  const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
 
   const nonArchivedLeads = useMemo(
     () => leads.filter((lead) => !lead.archived),
@@ -965,21 +969,31 @@ export default function Home() {
       alert("Lead saved locally, but Firestore sync failed.");
     }
 
-    setForm({
-      project: "",
-      customer: "",
-      moveDate: "",
-      status: "Hot Lead",
-      priority: "High",
-      nextAction: "Follow up with customer",
-      phone: "",
-      email: "",
-      followUpDate: "",
-      moveType: "",
-      assignedTo: "Curt",
-      lastContact: "",
-      notes: "",
+    setForm(createInitialForm());
+  }
+
+  async function saveEditedLead(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingLeadId) return;
+
+    await updateLead(editingLeadId, {
+      project: form.project.trim(),
+      customer: form.customer.trim(),
+      phone: form.phone,
+      email: form.email.trim(),
+      followUpDate: form.followUpDate,
+      moveDate: form.moveDate,
+      moveType: form.moveType,
+      status: form.status,
+      priority: form.priority,
+      nextAction: form.nextAction,
+      assignedTo: form.assignedTo,
+      lastContact: form.lastContact,
+      notes: form.notes,
     });
+
+    setEditingLeadId(null);
+    setForm(createInitialForm());
   }
 
   function updateStatus(id: string, status: string) {
@@ -1055,27 +1069,23 @@ export default function Home() {
     const existing = leads.find((lead) => lead.id === id);
     if (!existing) return;
 
-    const customer = prompt("Edit customer name", existing.customer);
-    if (customer === null) return;
-
-    const notes = prompt("Edit notes", existing.notes);
-    if (notes === null) return;
-
-    const email = prompt("Edit email", existing.email);
-    if (email === null) return;
-
-    const followUpDate = prompt(
-      "Edit follow-up date (YYYY-MM-DD)",
-      existing.followUpDate,
-    );
-    if (followUpDate === null) return;
-
-    void updateLead(id, {
-      customer: customer.trim(),
-      notes,
-      email: email.trim(),
-      followUpDate: followUpDate.trim(),
+    setForm({
+      project: existing.project,
+      customer: existing.customer,
+      phone: existing.phone,
+      email: existing.email,
+      followUpDate: existing.followUpDate,
+      moveDate: existing.moveDate,
+      moveType: existing.moveType,
+      status: existing.status,
+      priority: existing.priority,
+      nextAction: existing.nextAction,
+      assignedTo: existing.assignedTo,
+      lastContact: existing.lastContact,
+      notes: existing.notes,
     });
+    setEditingLeadId(id);
+    leadFormSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function copySummary() {
@@ -1573,177 +1583,218 @@ export default function Home() {
                 </button>
               ) : null}
 
-              <section style={formSection}>
-                <h2 style={sectionTitle}>Add Lead</h2>
-                <form onSubmit={addLead} style={formGrid}>
-                  <input
-                    style={input}
-                    placeholder="Project #"
-                    value={form.project}
-                    onChange={(e) => setForm({ ...form, project: e.target.value })}
-                  />
+              <section ref={leadFormSectionRef} style={formSection}>
+                <h2 style={sectionTitle}>{editingLeadId ? "Edit Lead" : "Add Lead"}</h2>
+                <form onSubmit={editingLeadId ? saveEditedLead : addLead} style={formGrid}>
+                  <div
+                    style={{
+                      ...formRow,
+                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                    }}
+                  >
+                    <input
+                      style={input}
+                      placeholder="Project #"
+                      value={form.project}
+                      onChange={(e) => setForm({ ...form, project: e.target.value })}
+                    />
 
-                  <input
-                    style={input}
-                    placeholder="Customer Name"
-                    value={form.customer}
-                    onChange={(e) => setForm({ ...form, customer: e.target.value })}
-                  />
+                    <input
+                      style={input}
+                      placeholder="Customer Name"
+                      value={form.customer}
+                      onChange={(e) => setForm({ ...form, customer: e.target.value })}
+                    />
 
-                  <input
-                    style={input}
-                    placeholder="Phone Number"
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  />
+                    <input
+                      style={input}
+                      placeholder="Phone Number"
+                      value={form.phone}
+                      onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    />
 
-                  <input
-                    style={input}
-                    type="email"
-                    placeholder="Email Address"
-                    value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  />
+                    <input
+                      style={input}
+                      type="email"
+                      placeholder="Email Address"
+                      value={form.email}
+                      onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    />
+                  </div>
 
-                  <label style={fieldLabel}>
-                    Move Date
-                    <div
-                      style={dateInputWrapper}
-                      onClick={() => openDatePicker(moveDateInputRef.current)}
-                    >
-                      <input
-                        ref={moveDateInputRef}
-                        style={{ ...input, ...dateInputField }}
-                        className="custom-date-input"
-                        type="date"
-                        value={form.moveDate}
-                        onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
-                      />
-                      <button
-                        type="button"
-                        style={datePickerButton}
-                        aria-label="Open move date picker"
+                  <div
+                    style={{
+                      ...formRow,
+                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                    }}
+                  >
+                    <label style={fieldLabel}>
+                      Move Date
+                      <div
+                        style={dateInputWrapper}
                         onClick={() => openDatePicker(moveDateInputRef.current)}
                       >
-                        📅
-                      </button>
-                    </div>
-                  </label>
+                        <input
+                          ref={moveDateInputRef}
+                          style={{ ...input, ...dateInputField }}
+                          className="custom-date-input"
+                          type="date"
+                          value={form.moveDate}
+                          onChange={(e) => setForm({ ...form, moveDate: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          style={datePickerButton}
+                          aria-label="Open move date picker"
+                          onClick={() => openDatePicker(moveDateInputRef.current)}
+                        >
+                          📅
+                        </button>
+                      </div>
+                    </label>
 
-                  <label style={fieldLabel}>
-                    Last Contact
-                    <div
-                      style={dateInputWrapper}
-                      onClick={() => openDatePicker(lastContactInputRef.current)}
-                    >
-                      <input
-                        ref={lastContactInputRef}
-                        style={{ ...input, ...dateInputField }}
-                        className="custom-date-input"
-                        type="date"
-                        value={form.lastContact}
-                        onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
-                      />
-                      <button
-                        type="button"
-                        style={datePickerButton}
-                        aria-label="Open last contact date picker"
-                        onClick={() => openDatePicker(lastContactInputRef.current)}
-                      >
-                        📅
-                      </button>
-                    </div>
-                  </label>
-
-                  <label style={fieldLabel}>
-                    Follow-Up Date
-                    <div
-                      style={dateInputWrapper}
-                      onClick={() => openDatePicker(followUpDateInputRef.current)}
-                    >
-                      <input
-                        ref={followUpDateInputRef}
-                        style={{ ...input, ...dateInputField }}
-                        className="custom-date-input"
-                        type="date"
-                        value={form.followUpDate}
-                        onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
-                      />
-                      <button
-                        type="button"
-                        style={datePickerButton}
-                        aria-label="Open follow-up date picker"
+                    <label style={fieldLabel}>
+                      Follow-Up Date
+                      <div
+                        style={dateInputWrapper}
                         onClick={() => openDatePicker(followUpDateInputRef.current)}
                       >
-                        📅
-                      </button>
-                    </div>
+                        <input
+                          ref={followUpDateInputRef}
+                          style={{ ...input, ...dateInputField }}
+                          className="custom-date-input"
+                          type="date"
+                          value={form.followUpDate}
+                          onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          style={datePickerButton}
+                          aria-label="Open follow-up date picker"
+                          onClick={() => openDatePicker(followUpDateInputRef.current)}
+                        >
+                          📅
+                        </button>
+                      </div>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Last Contact
+                      <div
+                        style={dateInputWrapper}
+                        onClick={() => openDatePicker(lastContactInputRef.current)}
+                      >
+                        <input
+                          ref={lastContactInputRef}
+                          style={{ ...input, ...dateInputField }}
+                          className="custom-date-input"
+                          type="date"
+                          value={form.lastContact}
+                          onChange={(e) => setForm({ ...form, lastContact: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          style={datePickerButton}
+                          aria-label="Open last contact date picker"
+                          onClick={() => openDatePicker(lastContactInputRef.current)}
+                        >
+                          📅
+                        </button>
+                      </div>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Move Type
+                      <select
+                        style={input}
+                        value={form.moveType}
+                        onChange={(e) => setForm({ ...form, moveType: e.target.value })}
+                      >
+                        <option value="">Move Type</option>
+                        {moveTypes.map((type) => (
+                          <option key={type}>{type}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div
+                    style={{
+                      ...formRow,
+                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                    }}
+                  >
+                    <label style={fieldLabel}>
+                      Assigned To
+                      <select
+                        style={input}
+                        value={form.assignedTo}
+                        onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
+                      >
+                        {assignedUsers.map((user) => (
+                          <option key={user}>{user}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Status
+                      <select
+                        style={input}
+                        value={form.status}
+                        onChange={(e) => setForm({ ...form, status: e.target.value })}
+                      >
+                        {statuses.map((status) => (
+                          <option key={status}>{status}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Priority
+                      <select
+                        style={input}
+                        value={form.priority}
+                        onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                      >
+                        <option>High</option>
+                        <option>Medium</option>
+                        <option>Low</option>
+                      </select>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Next Action
+                      <select
+                        style={input}
+                        value={form.nextAction}
+                        onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
+                      >
+                        {nextActions.map((action) => (
+                          <option key={action}>{action}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <label style={{ ...fieldLabel, gridColumn: "1 / -1" }}>
+                    Additional Details (Optional)
+                    <textarea
+                      style={notesInput}
+                      placeholder="Only add details that aren't already captured by the dropdowns."
+                      value={form.notes}
+                      onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                    />
                   </label>
 
-                  <select
-                    style={input}
-                    value={form.moveType}
-                    onChange={(e) => setForm({ ...form, moveType: e.target.value })}
-                  >
-                    <option value="">Move Type</option>
-                    {moveTypes.map((type) => (
-                      <option key={type}>{type}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    style={input}
-                    value={form.assignedTo}
-                    onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
-                  >
-                    {assignedUsers.map((user) => (
-                      <option key={user}>{user}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    style={input}
-                    value={form.status}
-                    onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  >
-                    {statuses.map((status) => (
-                      <option key={status}>{status}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    style={input}
-                    value={form.priority}
-                    onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                  >
-                    <option>High</option>
-                    <option>Medium</option>
-                    <option>Low</option>
-                  </select>
-
-                  <select
-                    style={input}
-                    value={form.nextAction}
-                    onChange={(e) => setForm({ ...form, nextAction: e.target.value })}
-                  >
-                    {nextActions.map((action) => (
-                      <option key={action}>{action}</option>
-                    ))}
-                  </select>
-
-                  <textarea
-                    style={notesInput}
-                    placeholder="Customer notes..."
-                    value={form.notes}
-                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  />
-
-                  <button
-                    type="submit"
-                    style={{ ...addLeadButton, ...(isMobile ? mobileButton : {}) }}
-                  >
-                    Add Lead
-                  </button>
+                  <div style={formActionsRow}>
+                    <button
+                      type="submit"
+                      style={{ ...addLeadButton, ...(isMobile ? mobileButton : {}) }}
+                    >
+                      {editingLeadId ? "Save Changes" : "Add Lead"}
+                    </button>
+                  </div>
                 </form>
               </section>
 
@@ -1771,7 +1822,10 @@ export default function Home() {
                             <p style={emptyColumnText}>No leads in this status</p>
                           </div>
                         ) : (
-                          statusLeads.map((lead) => (
+                          statusLeads.map((lead) => {
+                            const additionalDetails = lead.notes.trim();
+
+                            return (
                             <div key={lead.id} style={leadCard}>
                               <div id={`lead-${lead.id}`} />
                               <strong>Project {lead.project}</strong>
@@ -1815,25 +1869,29 @@ export default function Home() {
                               </p>
 
                               <p style={leadLine}>
-                                <b>Next:</b> {lead.nextAction}
+                                <b>Next Action:</b> {lead.nextAction}
                               </p>
 
-                              <p style={leadNotes}>
-                                <b>Notes:</b>{" "}
-                                {expandedNotes[lead.id] || lead.notes.length <= 120
-                                  ? lead.notes
-                                  : `${lead.notes.slice(0, 120)}...`}
-                              </p>
-                              {lead.notes.length > 120 ? (
-                                <button
-                                  onClick={() => toggleLeadNotes(lead.id)}
-                                  style={{
-                                    ...activityViewButton,
-                                    ...(isMobile ? mobileButton : {}),
-                                  }}
-                                >
-                                  {expandedNotes[lead.id] ? "Show less" : "Show more"}
-                                </button>
+                              {additionalDetails ? (
+                                <>
+                                  <p style={leadNotes}>
+                                    <b>Additional Details:</b>{" "}
+                                    {expandedNotes[lead.id] || additionalDetails.length <= 120
+                                      ? additionalDetails
+                                      : `${additionalDetails.slice(0, 120)}...`}
+                                  </p>
+                                  {additionalDetails.length > 120 ? (
+                                    <button
+                                      onClick={() => toggleLeadNotes(lead.id)}
+                                      style={{
+                                        ...activityViewButton,
+                                        ...(isMobile ? mobileButton : {}),
+                                      }}
+                                    >
+                                      {expandedNotes[lead.id] ? "Show less" : "Show more"}
+                                    </button>
+                                  ) : null}
+                                </>
                               ) : null}
 
                               <select
@@ -1868,7 +1926,8 @@ export default function Home() {
                                 </button>
                               </div>
                             </div>
-                          ))
+                          );
+                          })
                         )}
                       </div>
                     );
@@ -1919,9 +1978,15 @@ export default function Home() {
                         <b>Last Updated:</b> {formatActivityTime(lead.updatedAt)}
                       </p>
 
-                      <p style={leadNotes}>
-                        <b>Notes:</b> {lead.notes || "N/A"}
+                      <p style={leadLine}>
+                        <b>Next Action:</b> {lead.nextAction}
                       </p>
+
+                      {lead.notes.trim() ? (
+                        <p style={leadNotes}>
+                          <b>Additional Details:</b> {lead.notes}
+                        </p>
+                      ) : null}
 
                       <div style={leadActions}>
                         <button
@@ -2248,7 +2313,8 @@ const sectionTitle = {
 const formGrid = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-  gap: 12,
+  columnGap: 12,
+  rowGap: 12,
 };
 const input = {
   width: "100%",
@@ -2286,7 +2352,7 @@ const datePickerButton = {
 const notesInput = {
   gridColumn: "1 / -1",
   width: "100%",
-  minHeight: 120,
+  minHeight: 84,
   padding: 12,
   border: "1px solid #374151",
   borderRadius: 8,
@@ -2306,6 +2372,7 @@ const primaryButton = {
 const addLeadButton = {
   ...primaryButton,
   gridColumn: "1 / -1",
+  width: "100%",
   padding: "12px 16px",
   background: "#0f766e",
   fontWeight: 700,
@@ -2399,6 +2466,19 @@ const fieldLabel = {
   fontSize: 13,
   fontWeight: 700,
   color: "#9CA3AF",
+};
+
+const formRow = {
+  display: "grid",
+  gap: 12,
+  gridColumn: "1 / -1",
+};
+
+const formActionsRow = {
+  display: "grid",
+  gap: 12,
+  width: "100%",
+  gridColumn: "1 / -1",
 };
 
 const authCard = {
