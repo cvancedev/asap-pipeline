@@ -1760,137 +1760,139 @@ export default function Home() {
         ...(isMobile ? pageMobile : isTablet ? pageTablet : {}),
       }}
     >
-      <header style={{ ...header, ...(isNarrowHeader ? headerNarrow : {}) }}>
-        <div style={{ ...headerIdentity, ...(isNarrowHeader ? headerIdentityNarrow : {}) }}>
-          <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
-          <p style={userEmailText}>Signed in as: {user.email}</p>
-        </div>
+      <div style={{ ...topControlsShell, ...(isMobile ? topControlsShellMobile : {}) }}>
+        <header style={{ ...header, ...(isNarrowHeader ? headerNarrow : {}) }}>
+          <div style={{ ...headerIdentity, ...(isNarrowHeader ? headerIdentityNarrow : {}) }}>
+            <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
+            <p style={userEmailText}>Signed in as: {user.email}</p>
+          </div>
 
-        <div
-          style={{
-            ...headerActions,
-            ...(isNarrowHeader ? headerActionsNarrow : {}),
-            ...(isMobile ? headerActionsMobile : {}),
-          }}
-        >
-          <button
-            onClick={copySummary}
-            style={{ ...primaryButton, ...(isMobile ? mobileButton : {}) }}
+          <div
+            style={{
+              ...headerActions,
+              ...(isNarrowHeader ? headerActionsNarrow : {}),
+              ...(isMobile ? headerActionsMobile : {}),
+            }}
           >
-            Copy Summary
-          </button>
-          <button
-            onClick={exportBackup}
-            style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
-          >
-            Export Backup
-          </button>
-          <button
-            onClick={handleImportClick}
-            style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
-          >
-            Import Backup
-          </button>
-          <button
-            onClick={handleLogout}
-            style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
-          >
-            Logout
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: "none" }}
-            onChange={handleFileChange}
-          />
-        </div>
-      </header>
-
-      <section
-        style={{
-          ...searchSection,
-          ...(hasScrolled ? searchSectionScrolled : {}),
-          ...(isMobile ? searchSectionMobile : {}),
-        }}
-      >
-        <div style={{ ...searchRow, ...(isMobile ? searchRowMobile : {}) }}>
-          <input
-            style={{ ...searchInput, ...(isMobile ? searchInputMobile : {}) }}
-            type="search"
-            placeholder="Search project, customer, phone, or email..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-          {hasSearch ? (
             <button
-              type="button"
-              onClick={() => setSearchTerm("")}
-              style={{ ...clearSearchButton, ...(isMobile ? mobileButton : {}) }}
+              onClick={copySummary}
+              style={{ ...primaryButton, ...(isMobile ? mobileButton : {}) }}
             >
-              Clear Search
+              Copy Summary
             </button>
-          ) : null}
-        </div>
-        {hasSearch ? (
-          <p style={searchFeedbackText}>
-            Showing {activeTab === "archived" ? filteredArchivedLeads.length : filteredLeads.length} result(s) for: {searchTerm.trim()}
-          </p>
-        ) : null}
-        {activeTab === "dashboard" && selectedStatus ? (
-          <p style={searchFeedbackText}>Status filter: {selectedStatus}</p>
-        ) : null}
-        {activeTab === "dashboard" && showOverdueOnly ? (
-          <p style={searchFeedbackText}>Overdue filter: On</p>
-        ) : null}
-      </section>
+            <button
+              onClick={exportBackup}
+              style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
+            >
+              Export Backup
+            </button>
+            <button
+              onClick={handleImportClick}
+              style={{ ...exportButton, ...(isMobile ? mobileButton : {}) }}
+            >
+              Import Backup
+            </button>
+            <button
+              onClick={handleLogout}
+              style={{ ...deleteButton, ...(isMobile ? mobileButton : {}) }}
+            >
+              Logout
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json"
+              style={{ display: "none" }}
+              onChange={handleFileChange}
+            />
+          </div>
+        </header>
 
-      <section style={{ ...tabBar, ...(isMobile ? tabBarMobile : {}) }}>
-        <button
-          type="button"
-          onClick={() => setActiveTab("dashboard")}
+        <section
           style={{
-            ...tabButton,
-            ...(activeTab === "dashboard" ? tabButtonActive : {}),
-            ...(isMobile ? mobileTabButton : {}),
+            ...searchSection,
+            ...(hasScrolled ? searchSectionScrolled : {}),
+            ...(isMobile ? searchSectionMobile : {}),
           }}
         >
-          Dashboard
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("activity")}
-          style={{
-            ...tabButton,
-            ...(activeTab === "activity" ? tabButtonActive : {}),
-            ...(isMobile ? mobileTabButton : {}),
-          }}
-        >
-          Activity
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("archived")}
-          style={{
-            ...tabButton,
-            ...(activeTab === "archived" ? tabButtonActive : {}),
-            ...(isMobile ? mobileTabButton : {}),
-          }}
-        >
-          Archived ({archivedLeads.length})
-        </button>
-        <button
-          type="button"
-          onClick={openTeamChatTab}
-          style={{
-            ...tabButton,
-            ...(activeTab === "team-chat" ? tabButtonActive : {}),
-            ...(isMobile ? mobileTabButton : {}),
-          }}
-        >
-          Team Chat{teamChatUnreadCount > 0 ? ` (${teamChatUnreadCount})` : ""}
-        </button>
-      </section>
+          <div style={{ ...searchRow, ...(isMobile ? searchRowMobile : {}) }}>
+            <input
+              style={{ ...searchInput, ...(isMobile ? searchInputMobile : {}) }}
+              type="search"
+              placeholder="Search project, customer, phone, or email..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            {hasSearch ? (
+              <button
+                type="button"
+                onClick={() => setSearchTerm("")}
+                style={{ ...clearSearchButton, ...(isMobile ? mobileButton : {}) }}
+              >
+                Clear Search
+              </button>
+            ) : null}
+          </div>
+          {hasSearch ? (
+            <p style={searchFeedbackText}>
+              Showing {activeTab === "archived" ? filteredArchivedLeads.length : filteredLeads.length} result(s) for: {searchTerm.trim()}
+            </p>
+          ) : null}
+          {activeTab === "dashboard" && selectedStatus ? (
+            <p style={searchFeedbackText}>Status filter: {selectedStatus}</p>
+          ) : null}
+          {activeTab === "dashboard" && showOverdueOnly ? (
+            <p style={searchFeedbackText}>Overdue filter: On</p>
+          ) : null}
+        </section>
+
+        <section style={{ ...tabBar, ...(isMobile ? tabBarMobile : {}) }}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("dashboard")}
+            style={{
+              ...tabButton,
+              ...(activeTab === "dashboard" ? tabButtonActive : {}),
+              ...(isMobile ? mobileTabButton : {}),
+            }}
+          >
+            Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("activity")}
+            style={{
+              ...tabButton,
+              ...(activeTab === "activity" ? tabButtonActive : {}),
+              ...(isMobile ? mobileTabButton : {}),
+            }}
+          >
+            Activity
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("archived")}
+            style={{
+              ...tabButton,
+              ...(activeTab === "archived" ? tabButtonActive : {}),
+              ...(isMobile ? mobileTabButton : {}),
+            }}
+          >
+            Archived ({archivedLeads.length})
+          </button>
+          <button
+            type="button"
+            onClick={openTeamChatTab}
+            style={{
+              ...tabButton,
+              ...(activeTab === "team-chat" ? tabButtonActive : {}),
+              ...(isMobile ? mobileTabButton : {}),
+            }}
+          >
+            Team Chat{teamChatUnreadCount > 0 ? ` (${teamChatUnreadCount})` : ""}
+          </button>
+        </section>
+      </div>
 
       {activeTab === "dashboard" ? (
         <>
@@ -3122,9 +3124,6 @@ const searchSection = {
   borderRadius: 12,
   padding: 16,
   background: "#1F2937",
-  position: "sticky" as const,
-  top: 0,
-  zIndex: 40,
   width: "100%",
   boxSizing: "border-box" as const,
 };
@@ -3135,6 +3134,27 @@ const searchSectionMobile = {
 const searchSectionScrolled = {
   borderColor: "#4b5563",
   boxShadow: "0 8px 20px rgba(0, 0, 0, 0.3)",
+};
+
+const topControlsShell = {
+  position: "sticky" as const,
+  top: 0,
+  zIndex: 50,
+  display: "grid",
+  gap: 12,
+  paddingTop: 12,
+  paddingRight: 0,
+  paddingBottom: 14,
+  paddingLeft: 0,
+  background: "#111827",
+  borderBottom: "1px solid #374151",
+  boxShadow: "0 8px 18px rgba(0, 0, 0, 0.22)",
+};
+
+const topControlsShellMobile = {
+  gap: 10,
+  paddingTop: 10,
+  paddingBottom: 12,
 };
 
 const searchRow = {
