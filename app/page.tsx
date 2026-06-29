@@ -2731,9 +2731,11 @@ export default function Home() {
 
 const page = {
   width: "100%",
-  maxWidth: 1600,
+  maxWidth: 1480,
   margin: "0 auto",
-  padding: "16px 28px 24px",
+  paddingTop: 16,
+  paddingBottom: 24,
+  paddingInline: 32,
   boxSizing: "border-box" as const,
   fontFamily: "Arial, sans-serif",
   background: "#111827",
@@ -2744,11 +2746,15 @@ const page = {
   overflowX: "hidden" as const,
 };
 const pageMobile = {
-  padding: "12px 16px 16px",
+  paddingTop: 12,
+  paddingBottom: 16,
+  paddingInline: 16,
   gap: 16,
 };
 const pageTablet = {
-  padding: "14px 20px 20px",
+  paddingTop: 14,
+  paddingBottom: 20,
+  paddingInline: 20,
 };
 const header = {
   display: "flex",
