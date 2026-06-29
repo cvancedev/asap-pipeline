@@ -1675,7 +1675,12 @@ export default function Home() {
 
   if (authLoading) {
     return (
-      <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
+      <main
+        style={{
+          ...page,
+          ...(isMobile ? pageMobile : isTablet ? pageTablet : {}),
+        }}
+      >
         <section style={authCard}>
           <h1 style={{ marginTop: 0 }}>ASAP Pipeline</h1>
           <p>Checking authentication...</p>
@@ -1686,7 +1691,12 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
+      <main
+        style={{
+          ...page,
+          ...(isMobile ? pageMobile : isTablet ? pageTablet : {}),
+        }}
+      >
         <section style={authCard}>
           <h1 style={{ marginTop: 0 }}>ASAP Pipeline Login</h1>
           <p style={{ marginTop: 8 }}>
@@ -1722,7 +1732,12 @@ export default function Home() {
   }
 
   return (
-    <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
+    <main
+      style={{
+        ...page,
+        ...(isMobile ? pageMobile : isTablet ? pageTablet : {}),
+      }}
+    >
       <header style={header}>
         <div style={headerIdentity}>
           <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
@@ -2688,9 +2703,9 @@ export default function Home() {
 
 const page = {
   width: "100%",
-  maxWidth: 1280,
+  maxWidth: 1600,
   margin: "0 auto",
-  padding: 16,
+  padding: "16px 28px 24px",
   boxSizing: "border-box" as const,
   fontFamily: "Arial, sans-serif",
   background: "#111827",
@@ -2701,8 +2716,11 @@ const page = {
   overflowX: "hidden" as const,
 };
 const pageMobile = {
-  padding: 12,
+  padding: "12px 16px 16px",
   gap: 16,
+};
+const pageTablet = {
+  padding: "14px 20px 20px",
 };
 const header = {
   display: "flex",
