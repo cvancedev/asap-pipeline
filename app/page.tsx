@@ -111,6 +111,7 @@ const statuses = [
   "Waiting on Curt",
   "Waiting on Ava",
   "Booked / Confirmed",
+  "Booked / Waiting on Completion",
   "Lost / Closed",
 ];
 
@@ -417,6 +418,8 @@ function getStatusCardVisual(status: string) {
       return { bg: "#f3e8ff", border: "#c084fc" };
     case "Booked / Confirmed":
       return { bg: "#ecfdf3", border: "#86efac" };
+    case "Booked / Waiting on Completion":
+      return { bg: "#ecfeff", border: "#67e8f9" };
     case "Lost / Closed":
       return { bg: "#fef2f2", border: "#fca5a5" };
     default:
@@ -781,7 +784,11 @@ export default function Home() {
 
     return nonArchivedLeads.filter((lead) => {
       if (!lead.followUpDate) return false;
-      if (lead.status === "Booked / Confirmed" || lead.status === "Lost / Closed") {
+      if (
+        lead.status === "Booked / Confirmed" ||
+        lead.status === "Booked / Waiting on Completion" ||
+        lead.status === "Lost / Closed"
+      ) {
         return false;
       }
 
@@ -815,7 +822,11 @@ export default function Home() {
 
     return visibleLeads.filter((lead) => {
       if (!lead.followUpDate) return false;
-      if (lead.status === "Booked / Confirmed" || lead.status === "Lost / Closed") {
+      if (
+        lead.status === "Booked / Confirmed" ||
+        lead.status === "Booked / Waiting on Completion" ||
+        lead.status === "Lost / Closed"
+      ) {
         return false;
       }
 
