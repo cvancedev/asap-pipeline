@@ -337,6 +337,23 @@ function getIsTabletSnapshot(): boolean {
   return window.matchMedia("(min-width: 768px) and (max-width: 1023px)").matches;
 }
 
+function subscribeToIsNarrowHeader(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  const media = window.matchMedia("(max-width: 1279px)");
+  const handleChange = () => onStoreChange();
+  media.addEventListener("change", handleChange);
+
+  return () => {
+    media.removeEventListener("change", handleChange);
+  };
+}
+
+function getIsNarrowHeaderSnapshot(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(max-width: 1279px)").matches;
+}
+
 async function upsertLeadInFirestore(lead: Lead) {
   await setDoc(doc(sharedLeadsCollection, lead.id), lead, { merge: true });
 }
@@ -643,6 +660,11 @@ export default function Home() {
   const isTablet = useSyncExternalStore(
     subscribeToIsTablet,
     getIsTabletSnapshot,
+    () => false,
+  );
+  const isNarrowHeader = useSyncExternalStore(
+    subscribeToIsNarrowHeader,
+    getIsNarrowHeaderSnapshot,
     () => false,
   );
 
@@ -1738,13 +1760,19 @@ export default function Home() {
         ...(isMobile ? pageMobile : isTablet ? pageTablet : {}),
       }}
     >
-      <header style={header}>
-        <div style={headerIdentity}>
+      <header style={{ ...header, ...(isNarrowHeader ? headerNarrow : {}) }}>
+        <div style={{ ...headerIdentity, ...(isNarrowHeader ? headerIdentityNarrow : {}) }}>
           <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
           <p style={userEmailText}>Signed in as: {user.email}</p>
         </div>
 
-        <div style={{ ...headerActions, ...(isMobile ? headerActionsMobile : {}) }}>
+        <div
+          style={{
+            ...headerActions,
+            ...(isNarrowHeader ? headerActionsNarrow : {}),
+            ...(isMobile ? headerActionsMobile : {}),
+          }}
+        >
           <button
             onClick={copySummary}
             style={{ ...primaryButton, ...(isMobile ? mobileButton : {}) }}
@@ -2734,10 +2762,19 @@ const header = {
   background: "#1F2937",
   boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
 };
+const headerNarrow = {
+  justifyContent: "flex-start",
+  alignItems: "stretch",
+};
 const headerIdentity = {
   minWidth: 240,
   display: "grid",
   gap: 8,
+};
+const headerIdentityNarrow = {
+  flex: "1 1 100%",
+  width: "100%",
+  minWidth: 0,
 };
 const headerActions = {
   display: "flex",
@@ -2747,6 +2784,13 @@ const headerActions = {
   marginLeft: "auto",
   width: "100%",
   maxWidth: 540,
+};
+const headerActionsNarrow = {
+  flex: "1 1 100%",
+  width: "100%",
+  maxWidth: "100%",
+  marginLeft: 0,
+  justifyContent: "flex-start",
 };
 const headerActionsMobile = {
   display: "grid",
