@@ -43,9 +43,22 @@ type Lead = {
   status: string;
   priority: string;
   assignedTo: string;
+  preferredContactMethod: string;
+  bestTimeToContact: string;
   lastContact: string;
   nextAction: string;
   notes: string;
+  followUpHistory: FollowUpEntry[];
+};
+
+type FollowUpMethod = "Call" | "Text" | "Email" | "Internal Note";
+
+type FollowUpEntry = {
+  id: string;
+  date: string;
+  method: FollowUpMethod;
+  note: string;
+  createdAt: string;
 };
 
 type ActivityRecord = {
@@ -136,6 +149,10 @@ const moveTypes = [
   "Storage Move",
 ];
 
+const preferredContactMethods = ["No Preference", "Call", "Text", "Email"];
+const bestContactTimes = ["Anytime", "Morning", "Afternoon", "Evening"];
+const followUpMethods: FollowUpMethod[] = ["Call", "Text", "Email", "Internal Note"];
+
 const assignedUsers = ["Curt", "Jacob", "Ava"];
 const teamReactionOptions: TeamReactionEmoji[] = ["👍", "✅", "👀"];
 
@@ -151,6 +168,39 @@ let cachedLeadsSnapshot: Lead[] = EMPTY_LEADS;
 
 function getCurrentTimestamp(): string {
   return new Date().toISOString();
+}
+
+function getTodayInputDate(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeFollowUpMethod(method: unknown): FollowUpMethod {
+  return method === "Call" || method === "Text" || method === "Email" || method === "Internal Note"
+    ? method
+    : "Internal Note";
+}
+
+function normalizeFollowUpHistory(entries: unknown): FollowUpEntry[] {
+  if (!Array.isArray(entries)) return [];
+
+  return entries
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const typedEntry = entry as Partial<FollowUpEntry>;
+
+      return {
+        id: typedEntry.id || crypto.randomUUID(),
+        date: typedEntry.date || "",
+        method: normalizeFollowUpMethod(typedEntry.method),
+        note: typedEntry.note || "",
+        createdAt: typedEntry.createdAt || getCurrentTimestamp(),
+      } satisfies FollowUpEntry;
+    })
+    .filter((entry): entry is FollowUpEntry => Boolean(entry));
 }
 
 function normalizeLead(lead: Partial<Lead>): Lead {
@@ -178,9 +228,12 @@ function normalizeLead(lead: Partial<Lead>): Lead {
     status: normalizedStatus || "Hot Lead",
     priority: lead.priority || "High",
     assignedTo: lead.assignedTo || "Curt",
+    preferredContactMethod: lead.preferredContactMethod || "No Preference",
+    bestTimeToContact: lead.bestTimeToContact || "Anytime",
     lastContact: lead.lastContact || "",
     nextAction: lead.nextAction || "Follow up with customer",
     notes: lead.notes || "",
+    followUpHistory: normalizeFollowUpHistory(lead.followUpHistory),
   };
 }
 
@@ -390,6 +443,42 @@ function formatActivityDetails(item: ActivityRecord): string {
   }
 
   return item.details;
+}
+
+function formatShortDate(dateValue: string): string {
+  if (!dateValue) return "N/A";
+
+  const ymdMatch = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymdMatch) {
+    const [, year, month, day] = ymdMatch;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString("en-US", {
+        month: "2-digit",
+        day: "2-digit",
+        year: "2-digit",
+      });
+    }
+  }
+
+  const parsed = new Date(dateValue);
+  if (Number.isNaN(parsed.getTime())) return dateValue;
+
+  return parsed.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit",
+  });
+}
+
+function getFollowUpSortTimestamp(entry: FollowUpEntry): number {
+  if (entry.date) {
+    const dateTimestamp = new Date(`${entry.date}T00:00:00`).getTime();
+    if (!Number.isNaN(dateTimestamp)) return dateTimestamp;
+  }
+
+  const createdTimestamp = new Date(entry.createdAt).getTime();
+  return Number.isNaN(createdTimestamp) ? 0 : createdTimestamp;
 }
 
 function formatActivityDay(createdAt: string): string {
@@ -738,12 +827,23 @@ export default function Home() {
     priority: "High",
     nextAction: "Follow up with customer",
     assignedTo: "Curt",
+    preferredContactMethod: "No Preference",
+    bestTimeToContact: "Anytime",
     lastContact: "",
     notes: "",
   });
 
+  const createInitialFollowUpDraft = () => ({
+    date: getTodayInputDate(),
+    method: "Call" as FollowUpMethod,
+    note: "",
+  });
+
   const [form, setForm] = useState(createInitialForm);
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
+  const [followUpDrafts, setFollowUpDrafts] = useState<
+    Record<string, ReturnType<typeof createInitialFollowUpDraft>>
+  >({});
 
   const nonArchivedLeads = useMemo(
     () => leads.filter((lead) => !lead.archived),
@@ -932,6 +1032,29 @@ export default function Home() {
           `follow-up: ${existing.followUpDate || "none"} -> ${updatedLead.followUpDate || "none"}`,
         );
       }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "preferredContactMethod") &&
+        updates.preferredContactMethod !== existing.preferredContactMethod
+      ) {
+        detailParts.push(
+          `preferred contact: ${existing.preferredContactMethod} -> ${updatedLead.preferredContactMethod}`,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "bestTimeToContact") &&
+        updates.bestTimeToContact !== existing.bestTimeToContact
+      ) {
+        detailParts.push(
+          `best time: ${existing.bestTimeToContact} -> ${updatedLead.bestTimeToContact}`,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(updates, "followUpHistory") &&
+        updates.followUpHistory &&
+        updates.followUpHistory.length !== existing.followUpHistory.length
+      ) {
+        detailParts.push("follow-up history updated");
+      }
 
       await addActivityRecord(user.email || "unknown", {
         leadId: updatedLead.id,
@@ -961,6 +1084,7 @@ export default function Home() {
       archivedAt: "",
       archivedBy: "",
       previousStatus: "",
+      followUpHistory: [],
     };
 
     writeStoredLeads([newLead, ...leads]);
@@ -999,6 +1123,8 @@ export default function Home() {
       priority: form.priority,
       nextAction: form.nextAction,
       assignedTo: form.assignedTo,
+      preferredContactMethod: form.preferredContactMethod,
+      bestTimeToContact: form.bestTimeToContact,
       lastContact: form.lastContact,
       notes: form.notes,
     });
@@ -1092,11 +1218,44 @@ export default function Home() {
       priority: existing.priority,
       nextAction: existing.nextAction,
       assignedTo: existing.assignedTo,
+      preferredContactMethod: existing.preferredContactMethod,
+      bestTimeToContact: existing.bestTimeToContact,
       lastContact: existing.lastContact,
       notes: existing.notes,
     });
     setEditingLeadId(id);
     leadFormSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function addFollowUpHistoryEntry(lead: Lead) {
+    const draft = followUpDrafts[lead.id] || createInitialFollowUpDraft();
+    const trimmedNote = draft.note.trim();
+
+    if (!draft.date || !trimmedNote) {
+      alert("Follow-up date and note are required.");
+      return;
+    }
+
+    const newEntry: FollowUpEntry = {
+      id: crypto.randomUUID(),
+      date: draft.date,
+      method: draft.method,
+      note: trimmedNote,
+      createdAt: getCurrentTimestamp(),
+    };
+
+    void updateLead(lead.id, {
+      followUpHistory: [newEntry, ...lead.followUpHistory],
+      lastContact: draft.date,
+    });
+
+    setFollowUpDrafts((prev) => ({
+      ...prev,
+      [lead.id]: {
+        ...createInitialFollowUpDraft(),
+        method: draft.method,
+      },
+    }));
   }
 
   function copySummary() {
@@ -1788,6 +1947,41 @@ export default function Home() {
                     </label>
                   </div>
 
+                  <div
+                    style={{
+                      ...formRow,
+                      gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                    }}
+                  >
+                    <label style={fieldLabel}>
+                      Preferred Contact Method
+                      <select
+                        style={input}
+                        value={form.preferredContactMethod}
+                        onChange={(e) =>
+                          setForm({ ...form, preferredContactMethod: e.target.value })
+                        }
+                      >
+                        {preferredContactMethods.map((method) => (
+                          <option key={method}>{method}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label style={fieldLabel}>
+                      Best Time to Contact
+                      <select
+                        style={input}
+                        value={form.bestTimeToContact}
+                        onChange={(e) => setForm({ ...form, bestTimeToContact: e.target.value })}
+                      >
+                        {bestContactTimes.map((time) => (
+                          <option key={time}>{time}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
                   <label style={{ ...fieldLabel, gridColumn: "1 / -1" }}>
                     Additional Details (Optional)
                     <textarea
@@ -1835,6 +2029,10 @@ export default function Home() {
                         ) : (
                           statusLeads.map((lead) => {
                             const additionalDetails = lead.notes.trim();
+                            const followUpDraft = followUpDrafts[lead.id] || createInitialFollowUpDraft();
+                            const sortedFollowUpHistory = [...lead.followUpHistory].sort(
+                              (a, b) => getFollowUpSortTimestamp(b) - getFollowUpSortTimestamp(a),
+                            );
 
                             return (
                             <div key={lead.id} style={leadCard}>
@@ -1860,6 +2058,14 @@ export default function Home() {
                               </p>
 
                               <p style={leadLine}>
+                                <b>Preferred Contact:</b> {lead.preferredContactMethod}
+                              </p>
+
+                              <p style={leadLine}>
+                                <b>Best Time to Contact:</b> {lead.bestTimeToContact}
+                              </p>
+
+                              <p style={leadLine}>
                                 <b>Last Contact:</b> {lead.lastContact || "N/A"}
                               </p>
 
@@ -1882,6 +2088,94 @@ export default function Home() {
                               <p style={leadLine}>
                                 <b>Next Action:</b> {lead.nextAction}
                               </p>
+
+                              <div style={followUpHistorySection}>
+                                <p style={followUpHistoryTitle}>Follow-Up History</p>
+
+                                <div style={followUpFormGrid}>
+                                  <label style={fieldLabel}>
+                                    Date
+                                    <input
+                                      style={input}
+                                      type="date"
+                                      value={followUpDraft.date}
+                                      onChange={(e) =>
+                                        setFollowUpDrafts((prev) => ({
+                                          ...prev,
+                                          [lead.id]: {
+                                            ...followUpDraft,
+                                            date: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </label>
+
+                                  <label style={fieldLabel}>
+                                    Method
+                                    <select
+                                      style={input}
+                                      value={followUpDraft.method}
+                                      onChange={(e) =>
+                                        setFollowUpDrafts((prev) => ({
+                                          ...prev,
+                                          [lead.id]: {
+                                            ...followUpDraft,
+                                            method: normalizeFollowUpMethod(e.target.value),
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      {followUpMethods.map((method) => (
+                                        <option key={method}>{method}</option>
+                                      ))}
+                                    </select>
+                                  </label>
+
+                                  <label style={fieldLabel}>
+                                    Result / Note
+                                    <input
+                                      style={input}
+                                      type="text"
+                                      placeholder="Short note"
+                                      maxLength={220}
+                                      value={followUpDraft.note}
+                                      onChange={(e) =>
+                                        setFollowUpDrafts((prev) => ({
+                                          ...prev,
+                                          [lead.id]: {
+                                            ...followUpDraft,
+                                            note: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => addFollowUpHistoryEntry(lead)}
+                                  style={{
+                                    ...activityViewButton,
+                                    ...(isMobile ? mobileButton : {}),
+                                  }}
+                                >
+                                  Add Follow-Up
+                                </button>
+
+                                {sortedFollowUpHistory.length > 0 ? (
+                                  <div style={followUpHistoryList}>
+                                    {sortedFollowUpHistory.map((entry) => (
+                                      <p key={entry.id} style={followUpHistoryItem}>
+                                        {formatShortDate(entry.date)} | {entry.method} | {entry.note}
+                                      </p>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p style={activityMetaText}>No follow-up history yet.</p>
+                                )}
+                              </div>
 
                               {additionalDetails ? (
                                 <>
@@ -1987,6 +2281,14 @@ export default function Home() {
 
                       <p style={leadLine}>
                         <b>Last Updated:</b> {formatActivityTime(lead.updatedAt)}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Preferred Contact:</b> {lead.preferredContactMethod}
+                      </p>
+
+                      <p style={leadLine}>
+                        <b>Best Time to Contact:</b> {lead.bestTimeToContact}
                       </p>
 
                       <p style={leadLine}>
@@ -2445,6 +2747,34 @@ const leadNotes = {
   border: "1px solid #374151",
   borderRadius: 8,
   padding: 8,
+  overflowWrap: "anywhere" as const,
+};
+const followUpHistorySection = {
+  marginTop: 10,
+  border: "1px solid #374151",
+  borderRadius: 8,
+  padding: 10,
+  background: "#0f172a",
+  display: "grid",
+  gap: 10,
+};
+const followUpHistoryTitle = {
+  margin: 0,
+  fontWeight: 700,
+};
+const followUpFormGrid = {
+  display: "grid",
+  gap: 10,
+  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+};
+const followUpHistoryList = {
+  display: "grid",
+  gap: 6,
+};
+const followUpHistoryItem = {
+  margin: 0,
+  lineHeight: 1.35,
+  color: "#E5E7EB",
   overflowWrap: "anywhere" as const,
 };
 const leadActions = {
