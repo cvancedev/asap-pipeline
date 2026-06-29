@@ -158,8 +158,10 @@ const teamReactionOptions: TeamReactionEmoji[] = ["👍", "✅", "👀"];
 
 const LEADS_STORAGE_KEY = "asap-pipeline";
 const LEADS_STORE_EVENT = "asap-pipeline-updated";
+const SHARED_WORKSPACE_ID = "asap-moving-hauling";
 const EMPTY_LEADS: Lead[] = [];
-const leadsCollection = collection(db, "leads");
+const sharedLeadsCollection = collection(db, "workspaces", SHARED_WORKSPACE_ID, "leads");
+const legacyLeadsCollection = collection(db, "leads");
 const activityCollection = collection(db, "activity");
 const teamMessagesCollection = collection(db, "teamMessages");
 
@@ -295,6 +297,12 @@ function subscribeToLeads(onStoreChange: () => void): () => void {
   };
 }
 
+function fallbackToLocalStoredLeads(reason: string) {
+  const localLeads = readStoredLeads();
+  console.error(`${reason}. Falling back to localStorage cache with ${localLeads.length} lead(s).`);
+  writeStoredLeads(localLeads);
+}
+
 function subscribeToIsMobile(onStoreChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
 
@@ -313,11 +321,11 @@ function getIsMobileSnapshot(): boolean {
 }
 
 async function upsertLeadInFirestore(lead: Lead) {
-  await setDoc(doc(leadsCollection, lead.id), lead, { merge: true });
+  await setDoc(doc(sharedLeadsCollection, lead.id), lead, { merge: true });
 }
 
 async function replaceFirestoreLeads(leads: Lead[]) {
-  const snapshot = await getDocs(leadsCollection);
+  const snapshot = await getDocs(sharedLeadsCollection);
   const leadIds = new Set(leads.map((lead) => lead.id));
   const batch = writeBatch(db);
 
@@ -330,10 +338,34 @@ async function replaceFirestoreLeads(leads: Lead[]) {
   });
 
   leads.forEach((lead) => {
-    batch.set(doc(leadsCollection, lead.id), lead);
+    batch.set(doc(sharedLeadsCollection, lead.id), lead);
   });
 
   await batch.commit();
+}
+
+function mapFirestoreDocsToLeads(snapshot: Awaited<ReturnType<typeof getDocs>>): Lead[] {
+  return snapshot.docs.map((docSnapshot) => {
+    const data = docSnapshot.data() as Partial<Lead>;
+    return normalizeLead({ id: data.id || docSnapshot.id, ...data });
+  });
+}
+
+async function migrateLegacyLeadsToSharedWorkspace() {
+  const legacySnapshot = await getDocs(legacyLeadsCollection);
+  if (legacySnapshot.empty) {
+    return [] as Lead[];
+  }
+
+  const legacyLeads = mapFirestoreDocsToLeads(legacySnapshot);
+  const batch = writeBatch(db);
+
+  legacyLeads.forEach((lead) => {
+    batch.set(doc(sharedLeadsCollection, lead.id), lead, { merge: true });
+  });
+
+  await batch.commit();
+  return legacyLeads;
 }
 
 async function addActivityRecord(
@@ -558,6 +590,7 @@ export default function Home() {
   const followUpDateInputRef = useRef<HTMLInputElement | null>(null);
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const teamMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasAttemptedLegacyLeadMigrationRef = useRef(false);
   const hasInitializedTeamChatReadRef = useRef(false);
   const teamChatLastReadAtMsRef = useRef(0);
   const hasInitializedTeamChatToastRef = useRef(false);
@@ -607,23 +640,84 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
 
-    const unsubscribe = onSnapshot(
-      leadsCollection,
-      (snapshot) => {
-        const firestoreLeads = snapshot.docs.map((docSnapshot) => {
-          const data = docSnapshot.data() as Partial<Lead>;
-          return normalizeLead({ id: data.id || docSnapshot.id, ...data });
-        });
+    let isMounted = true;
 
-        // Keep Firestore as source of truth while preserving local backups.
-        writeStoredLeads(firestoreLeads);
+    const bootstrapSharedLeads = async () => {
+      try {
+        const sharedSnapshot = await getDocs(sharedLeadsCollection);
+        if (!isMounted) return;
+
+        if (!sharedSnapshot.empty) {
+          writeStoredLeads(mapFirestoreDocsToLeads(sharedSnapshot));
+          hasAttemptedLegacyLeadMigrationRef.current = true;
+          return;
+        }
+
+        if (hasAttemptedLegacyLeadMigrationRef.current) return;
+        hasAttemptedLegacyLeadMigrationRef.current = true;
+
+        const migratedLeads = await migrateLegacyLeadsToSharedWorkspace();
+        if (!isMounted) return;
+
+        if (migratedLeads.length > 0) {
+          console.info(
+            `Migrated ${migratedLeads.length} legacy lead(s) into workspace ${SHARED_WORKSPACE_ID}.`,
+          );
+          writeStoredLeads(migratedLeads);
+        }
+      } catch (err) {
+        console.error("Failed to bootstrap shared workspace leads", err);
+        fallbackToLocalStoredLeads("Shared workspace bootstrap read failed");
+      }
+    };
+
+    void bootstrapSharedLeads();
+
+    const unsubscribe = onSnapshot(
+      sharedLeadsCollection,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          hasAttemptedLegacyLeadMigrationRef.current = true;
+          // Keep Firestore as source of truth while preserving local backups.
+          writeStoredLeads(mapFirestoreDocsToLeads(snapshot));
+          return;
+        }
+
+        if (hasAttemptedLegacyLeadMigrationRef.current) {
+          writeStoredLeads([]);
+          return;
+        }
+
+        hasAttemptedLegacyLeadMigrationRef.current = true;
+        void (async () => {
+          try {
+            const migratedLeads = await migrateLegacyLeadsToSharedWorkspace();
+            if (!isMounted) return;
+
+            if (migratedLeads.length > 0) {
+              console.info(
+                `Migrated ${migratedLeads.length} legacy lead(s) into workspace ${SHARED_WORKSPACE_ID}.`,
+              );
+              writeStoredLeads(migratedLeads);
+            } else {
+              writeStoredLeads([]);
+            }
+          } catch (err) {
+            console.error("Failed to migrate legacy leads to shared workspace", err);
+            fallbackToLocalStoredLeads("Legacy lead migration failed");
+          }
+        })();
       },
       (err) => {
-        console.error("Failed to subscribe to Firestore leads", err);
+        console.error("Failed to subscribe to shared workspace leads", err);
+        fallbackToLocalStoredLeads("Realtime subscription to shared workspace leads failed");
       },
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [user]);
 
   useEffect(() => {
