@@ -320,6 +320,23 @@ function getIsMobileSnapshot(): boolean {
   return window.matchMedia("(max-width: 767px)").matches;
 }
 
+function subscribeToIsTablet(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  const media = window.matchMedia("(min-width: 768px) and (max-width: 1023px)");
+  const handleChange = () => onStoreChange();
+  media.addEventListener("change", handleChange);
+
+  return () => {
+    media.removeEventListener("change", handleChange);
+  };
+}
+
+function getIsTabletSnapshot(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(min-width: 768px) and (max-width: 1023px)").matches;
+}
+
 async function upsertLeadInFirestore(lead: Lead) {
   await setDoc(doc(sharedLeadsCollection, lead.id), lead, { merge: true });
 }
@@ -621,6 +638,11 @@ export default function Home() {
   const isMobile = useSyncExternalStore(
     subscribeToIsMobile,
     getIsMobileSnapshot,
+    () => false,
+  );
+  const isTablet = useSyncExternalStore(
+    subscribeToIsTablet,
+    getIsTabletSnapshot,
     () => false,
   );
 
@@ -1072,6 +1094,31 @@ export default function Home() {
   }, [recentActivity]);
 
   const hasActivity = visibleActivityCount > 0;
+  const statsGridColumns = isMobile
+    ? "1fr"
+    : isTablet
+      ? "repeat(2, minmax(0, 1fr))"
+      : "repeat(auto-fit, minmax(220px, 1fr))";
+  const formGridColumns = isMobile
+    ? "1fr"
+    : isTablet
+      ? "repeat(2, minmax(0, 1fr))"
+      : "repeat(4, minmax(0, 1fr))";
+  const boardGridColumns = isMobile
+    ? "1fr"
+    : isTablet
+      ? "repeat(2, minmax(0, 1fr))"
+      : "repeat(auto-fit, minmax(300px, 1fr))";
+  const activityGridColumns = isMobile
+    ? "1fr"
+    : isTablet
+      ? "repeat(2, minmax(0, 1fr))"
+      : "repeat(auto-fit, minmax(300px, 1fr))";
+  const followUpGridColumns = isMobile
+    ? "1fr"
+    : isTablet
+      ? "repeat(2, minmax(0, 1fr))"
+      : "repeat(3, minmax(0, 1fr))";
 
   async function updateLead(id: string, updates: Partial<Lead>) {
     const existing = leads.find((lead) => lead.id === id);
@@ -1628,7 +1675,7 @@ export default function Home() {
 
   if (authLoading) {
     return (
-      <main style={page}>
+      <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
         <section style={authCard}>
           <h1 style={{ marginTop: 0 }}>ASAP Pipeline</h1>
           <p>Checking authentication...</p>
@@ -1639,7 +1686,7 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main style={page}>
+      <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
         <section style={authCard}>
           <h1 style={{ marginTop: 0 }}>ASAP Pipeline Login</h1>
           <p style={{ marginTop: 8 }}>
@@ -1675,14 +1722,14 @@ export default function Home() {
   }
 
   return (
-    <main style={page}>
+    <main style={{ ...page, ...(isMobile ? pageMobile : {}) }}>
       <header style={header}>
         <div style={headerIdentity}>
           <h1 style={{ margin: 0 }}>🚚 ASAP Pipeline</h1>
           <p style={userEmailText}>Signed in as: {user.email}</p>
         </div>
 
-        <div style={headerActions}>
+        <div style={{ ...headerActions, ...(isMobile ? headerActionsMobile : {}) }}>
           <button
             onClick={copySummary}
             style={{ ...primaryButton, ...(isMobile ? mobileButton : {}) }}
@@ -1721,11 +1768,12 @@ export default function Home() {
         style={{
           ...searchSection,
           ...(hasScrolled ? searchSectionScrolled : {}),
+          ...(isMobile ? searchSectionMobile : {}),
         }}
       >
-        <div style={searchRow}>
+        <div style={{ ...searchRow, ...(isMobile ? searchRowMobile : {}) }}>
           <input
-            style={searchInput}
+            style={{ ...searchInput, ...(isMobile ? searchInputMobile : {}) }}
             type="search"
             placeholder="Search project, customer, phone, or email..."
             value={searchTerm}
@@ -1754,32 +1802,48 @@ export default function Home() {
         ) : null}
       </section>
 
-      <section style={tabBar}>
+      <section style={{ ...tabBar, ...(isMobile ? tabBarMobile : {}) }}>
         <button
           type="button"
           onClick={() => setActiveTab("dashboard")}
-          style={{ ...tabButton, ...(activeTab === "dashboard" ? tabButtonActive : {}) }}
+          style={{
+            ...tabButton,
+            ...(activeTab === "dashboard" ? tabButtonActive : {}),
+            ...(isMobile ? mobileTabButton : {}),
+          }}
         >
           Dashboard
         </button>
         <button
           type="button"
           onClick={() => setActiveTab("activity")}
-          style={{ ...tabButton, ...(activeTab === "activity" ? tabButtonActive : {}) }}
+          style={{
+            ...tabButton,
+            ...(activeTab === "activity" ? tabButtonActive : {}),
+            ...(isMobile ? mobileTabButton : {}),
+          }}
         >
           Activity
         </button>
         <button
           type="button"
           onClick={() => setActiveTab("archived")}
-          style={{ ...tabButton, ...(activeTab === "archived" ? tabButtonActive : {}) }}
+          style={{
+            ...tabButton,
+            ...(activeTab === "archived" ? tabButtonActive : {}),
+            ...(isMobile ? mobileTabButton : {}),
+          }}
         >
           Archived ({archivedLeads.length})
         </button>
         <button
           type="button"
           onClick={openTeamChatTab}
-          style={{ ...tabButton, ...(activeTab === "team-chat" ? tabButtonActive : {}) }}
+          style={{
+            ...tabButton,
+            ...(activeTab === "team-chat" ? tabButtonActive : {}),
+            ...(isMobile ? mobileTabButton : {}),
+          }}
         >
           Team Chat{teamChatUnreadCount > 0 ? ` (${teamChatUnreadCount})` : ""}
         </button>
@@ -1787,7 +1851,7 @@ export default function Home() {
 
       {activeTab === "dashboard" ? (
         <>
-              <section style={statsGrid}>
+              <section style={{ ...statsGrid, gridTemplateColumns: statsGridColumns }}>
                 {statuses.map((status) => (
                   <button
                     key={status}
@@ -1847,13 +1911,16 @@ export default function Home() {
                 </button>
               ) : null}
 
-              <section ref={leadFormSectionRef} style={formSection}>
+              <section
+                ref={leadFormSectionRef}
+                style={{ ...formSection, ...(isMobile ? formSectionMobile : {}) }}
+              >
                 <h2 style={sectionTitle}>{editingLeadId ? "Edit Lead" : "Add Lead"}</h2>
                 <form onSubmit={editingLeadId ? saveEditedLead : addLead} style={formGrid}>
                   <div
                     style={{
                       ...formRow,
-                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                      gridTemplateColumns: formGridColumns,
                     }}
                   >
                     <input
@@ -1889,7 +1956,7 @@ export default function Home() {
                   <div
                     style={{
                       ...formRow,
-                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                      gridTemplateColumns: formGridColumns,
                     }}
                   >
                     <label style={fieldLabel}>
@@ -1985,7 +2052,7 @@ export default function Home() {
                   <div
                     style={{
                       ...formRow,
-                      gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
+                      gridTemplateColumns: formGridColumns,
                     }}
                   >
                     <label style={fieldLabel}>
@@ -2044,7 +2111,11 @@ export default function Home() {
                   <div
                     style={{
                       ...formRow,
-                      gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                      gridTemplateColumns: isMobile
+                        ? "1fr"
+                        : isTablet
+                          ? "repeat(2, minmax(0, 1fr))"
+                          : "repeat(4, minmax(0, 1fr))",
                     }}
                   >
                     <label style={fieldLabel}>
@@ -2097,7 +2168,7 @@ export default function Home() {
                 </form>
               </section>
 
-              <section style={board}>
+              <section style={{ ...board, gridTemplateColumns: boardGridColumns }}>
                 {statusFilteredLeads.length === 0 ? (
                   <div style={noResultsState}>
                     <p style={noResultsText}>
@@ -2186,7 +2257,7 @@ export default function Home() {
                               <div style={followUpHistorySection}>
                                 <p style={followUpHistoryTitle}>Follow-Up History</p>
 
-                                <div style={followUpFormGrid}>
+                                <div style={{ ...followUpFormGrid, gridTemplateColumns: followUpGridColumns }}>
                                   <label style={fieldLabel}>
                                     Date
                                     <input
@@ -2335,7 +2406,7 @@ export default function Home() {
               </section>
         </>
       ) : activeTab === "archived" ? (
-            <section style={activitySection}>
+            <section style={{ ...activitySection, ...(isMobile ? activitySectionMobile : {}) }}>
               <div style={activityHeaderRow}>
                 <h2 style={{ margin: 0 }}>Archived Leads ({visibleArchivedLeads.length})</h2>
               </div>
@@ -2345,7 +2416,7 @@ export default function Home() {
                   <p style={noResultsText}>No matching archived leads found</p>
                 </div>
               ) : visibleArchivedLeads.length > 0 ? (
-                <div style={activityList}>
+                <div style={{ ...activityList, gridTemplateColumns: activityGridColumns }}>
                   {visibleArchivedLeads.map((lead) => (
                     <div key={lead.id} style={leadCard}>
                       <div id={`lead-${lead.id}`} />
@@ -2414,7 +2485,7 @@ export default function Home() {
               )}
             </section>
       ) : activeTab === "team-chat" ? (
-            <section style={activitySection}>
+            <section style={{ ...activitySection, ...(isMobile ? activitySectionMobile : {}) }}>
               <div style={activityHeaderRow}>
                 <h2 style={{ margin: 0 }}>Team Chat</h2>
                 <p style={searchFeedbackText}>
@@ -2422,7 +2493,7 @@ export default function Home() {
                 </p>
               </div>
 
-              <div style={teamChatComposer}>
+              <div style={{ ...teamChatComposer, ...(isMobile ? teamChatComposerMobile : {}) }}>
                 <textarea
                   ref={teamMessageInputRef}
                   style={teamChatInput}
@@ -2440,6 +2511,7 @@ export default function Home() {
                     ...(isSendingTeamMessage || teamMessageInput.trim().length === 0
                       ? disabledButton
                       : {}),
+                    ...(isMobile ? mobileButton : {}),
                   }}
                 >
                   Send
@@ -2453,7 +2525,10 @@ export default function Home() {
                     {pinnedTeamMessages.map((message) => {
                       const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
                       return (
-                        <div key={`pinned-${message.id}`} style={teamPinnedItem}>
+                        <div
+                          key={`pinned-${message.id}`}
+                          style={{ ...teamPinnedItem, ...(isMobile ? teamPinnedItemMobile : {}) }}
+                        >
                           <p style={teamPinnedText}>
                             <strong>{sender}:</strong> {getTeamMessagePreview(message.text)}
                           </p>
@@ -2478,7 +2553,7 @@ export default function Home() {
                     const sender = message.userName || message.userEmail.split("@")[0] || "unknown";
                     return (
                       <div key={message.id} style={teamChatMessageItem}>
-                        <div style={teamChatMessageHeader}>
+                        <div style={{ ...teamChatMessageHeader, ...(isMobile ? teamChatMessageHeaderMobile : {}) }}>
                           <p style={teamChatSenderLine}>
                             <strong>{sender}</strong> <span style={activityMetaText}>({message.userEmail})</span>
                           </p>
@@ -2526,7 +2601,7 @@ export default function Home() {
               </div>
             </section>
       ) : (
-            <section style={activitySection}>
+            <section style={{ ...activitySection, ...(isMobile ? activitySectionMobile : {}) }}>
               <div style={activityHeaderRow}>
                 <h2 style={{ margin: 0 }}>Recent Activity ({visibleActivityCount})</h2>
                 <div style={activityFilterBar}>
@@ -2547,7 +2622,7 @@ export default function Home() {
                 </div>
               </div>
               {hasActivity ? (
-                <div style={activityList}>
+                <div style={{ ...activityList, gridTemplateColumns: activityGridColumns }}>
                   {activityGroups.map((group) => (
                     <div key={group.day} style={activityDayGroup}>
                       <h3 style={activityDayTitle}>{group.day}</h3>
@@ -2623,6 +2698,11 @@ const page = {
   minHeight: "100vh",
   display: "grid",
   gap: 22,
+  overflowX: "hidden" as const,
+};
+const pageMobile = {
+  padding: 12,
+  gap: 16,
 };
 const header = {
   display: "flex",
@@ -2650,15 +2730,26 @@ const headerActions = {
   width: "100%",
   maxWidth: 540,
 };
+const headerActionsMobile = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  maxWidth: "100%",
+};
 const tabBar = {
   display: "flex",
+  flexWrap: "wrap" as const,
   gap: 8,
   padding: 6,
   border: "1px solid #374151",
   borderRadius: 12,
   background: "#1F2937",
-  width: "fit-content",
+  width: "100%",
   boxShadow: "0 6px 18px rgba(0, 0, 0, 0.22)",
+};
+const tabBarMobile = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 6,
 };
 const tabButton = {
   padding: "10px 14px",
@@ -2668,6 +2759,11 @@ const tabButton = {
   color: "#9CA3AF",
   cursor: "pointer",
   fontWeight: 700,
+  minWidth: 0,
+};
+const mobileTabButton = {
+  width: "100%",
+  textAlign: "left" as const,
 };
 const tabButtonActive = {
   background: "#374151",
@@ -2712,6 +2808,9 @@ const formSection = {
   padding: 16,
   background: "#1F2937",
   boxShadow: "0 8px 20px rgba(0, 0, 0, 0.22)",
+};
+const formSectionMobile = {
+  padding: 12,
 };
 const sectionTitle = {
   marginTop: 0,
@@ -2788,6 +2887,7 @@ const board = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
   gap: 16,
+  minWidth: 0,
 };
 const column = {
   background: "#1F2937",
@@ -2860,6 +2960,7 @@ const followUpFormGrid = {
   display: "grid",
   gap: 10,
   gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  minWidth: 0,
 };
 const followUpHistoryList = {
   display: "grid",
@@ -2956,6 +3057,11 @@ const searchSection = {
   position: "sticky" as const,
   top: 0,
   zIndex: 40,
+  width: "100%",
+  boxSizing: "border-box" as const,
+};
+const searchSectionMobile = {
+  padding: 12,
 };
 
 const searchSectionScrolled = {
@@ -2968,6 +3074,11 @@ const searchRow = {
   gap: 8,
   flexWrap: "wrap" as const,
   alignItems: "center",
+  minWidth: 0,
+};
+const searchRowMobile = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
 };
 
 const searchInput = {
@@ -2979,6 +3090,10 @@ const searchInput = {
   background: "#111827",
   color: "#F9FAFB",
   boxSizing: "border-box" as const,
+};
+const searchInputMobile = {
+  width: "100%",
+  flex: "1 1 100%",
 };
 
 const clearSearchButton = {
@@ -3021,6 +3136,10 @@ const activitySection = {
   padding: 18,
   background: "#1F2937",
   boxShadow: "0 8px 20px rgba(0, 0, 0, 0.24)",
+  minWidth: 0,
+};
+const activitySectionMobile = {
+  padding: 12,
 };
 
 const activityHeaderRow = {
@@ -3057,6 +3176,7 @@ const activityList = {
   display: "grid",
   gap: 10,
   gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+  minWidth: 0,
 };
 
 const activityItem = {
@@ -3123,6 +3243,10 @@ const teamChatMessageHeader = {
   alignItems: "flex-start",
   justifyContent: "space-between",
 };
+const teamChatMessageHeaderMobile = {
+  flexDirection: "column" as const,
+  alignItems: "stretch",
+};
 
 const teamChatMessageText = {
   margin: "8px 0 0",
@@ -3173,6 +3297,10 @@ const teamPinnedItem = {
   borderRadius: 8,
   padding: "6px 8px",
   background: "#1F2937",
+};
+const teamPinnedItemMobile = {
+  flexDirection: "column" as const,
+  alignItems: "stretch",
 };
 
 const teamPinnedText = {
@@ -3244,6 +3372,9 @@ const teamChatComposer = {
   display: "grid",
   gap: 10,
   marginTop: 14,
+};
+const teamChatComposerMobile = {
+  gridTemplateColumns: "1fr",
 };
 
 const teamChatInput = {
